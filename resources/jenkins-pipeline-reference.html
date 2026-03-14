@@ -1,0 +1,1756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jenkins Pipeline Groovy Reference</title>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --bg2: #262637;
+    --bg3: #2e2e42;
+    --fg: #cdd6f4;
+    --fg2: #a6adc8;
+    --accent: #89b4fa;
+    --accent2: #74c7ec;
+    --green: #a6e3a1;
+    --yellow: #f9e2af;
+    --red: #f38ba8;
+    --border: #45475a;
+    --code-bg: #181825;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.6;
+  }
+  #search-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  #search-bar h1 {
+    font-size: 16px; color: var(--accent); white-space: nowrap;
+  }
+  #search-input {
+    flex: 1; padding: 8px 14px;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    font-size: 15px; outline: none;
+  }
+  #search-input:focus { border-color: var(--accent); }
+  #search-input::placeholder { color: var(--fg2); }
+  #match-count {
+    color: var(--fg2); font-size: 13px; white-space: nowrap;
+  }
+  #layout {
+    display: flex; margin-top: 52px; min-height: calc(100vh - 52px);
+  }
+  #toc {
+    width: 280px; min-width: 280px;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    padding: 16px 0;
+    position: fixed; top: 52px; bottom: 0; left: 0;
+    overflow-y: auto;
+  }
+  #toc a {
+    display: block; padding: 5px 16px;
+    color: var(--fg2); text-decoration: none;
+    font-size: 13px; border-left: 3px solid transparent;
+  }
+  #toc a:hover, #toc a.active {
+    color: var(--accent); background: var(--bg3);
+    border-left-color: var(--accent);
+  }
+  #toc .toc-section {
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--fg2);
+    padding: 12px 16px 4px; font-weight: 600;
+  }
+  #content {
+    flex: 1; margin-left: 280px;
+    padding: 24px 40px 80px;
+    max-width: 960px;
+  }
+  h2 {
+    color: var(--accent); font-size: 24px;
+    margin: 40px 0 16px; padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2:first-child { margin-top: 0; }
+  h3 {
+    color: var(--accent2); font-size: 18px;
+    margin: 28px 0 10px;
+  }
+  h4 {
+    color: var(--green); font-size: 15px;
+    margin: 20px 0 8px;
+  }
+  p, li { color: var(--fg); margin-bottom: 8px; }
+  ul, ol { padding-left: 24px; margin-bottom: 12px; }
+  code {
+    background: var(--code-bg); color: var(--yellow);
+    padding: 2px 6px; border-radius: 3px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.9em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    margin: 10px 0 16px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  pre code {
+    background: none; padding: 0; color: var(--fg);
+  }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin: 12px 0 18px;
+  }
+  th, td {
+    text-align: left; padding: 8px 12px;
+    border: 1px solid var(--border);
+    font-size: 14px;
+  }
+  th { background: var(--bg3); color: var(--accent); font-weight: 600; }
+  td { background: var(--bg2); }
+  .param-table td:first-child { color: var(--yellow); font-family: monospace; white-space: nowrap; }
+  .param-table td:nth-child(2) { color: var(--green); font-family: monospace; white-space: nowrap; }
+  .warning {
+    background: #3b2a1a; border-left: 4px solid var(--yellow);
+    padding: 10px 14px; margin: 12px 0; border-radius: 4px;
+    font-size: 14px;
+  }
+  .danger {
+    background: #3b1a2a; border-left: 4px solid var(--red);
+    padding: 10px 14px; margin: 12px 0; border-radius: 4px;
+    font-size: 14px;
+  }
+  .tip {
+    background: #1a3b2a; border-left: 4px solid var(--green);
+    padding: 10px 14px; margin: 12px 0; border-radius: 4px;
+    font-size: 14px;
+  }
+  mark {
+    background: #89b4fa40; color: inherit;
+    border-radius: 2px; padding: 0 2px;
+  }
+  .hidden { display: none !important; }
+  section { scroll-margin-top: 60px; }
+  @media (max-width: 900px) {
+    #toc { display: none; }
+    #content { margin-left: 0; padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="search-bar">
+  <h1>Jenkins Pipeline Reference</h1>
+  <input type="text" id="search-input" placeholder="Search steps, directives, syntax... (Ctrl+F)" autofocus>
+  <span id="match-count"></span>
+</div>
+
+<div id="layout">
+<nav id="toc">
+  <div class="toc-section">Pipeline Syntax</div>
+  <a href="#declarative">Declarative Pipeline</a>
+  <a href="#agent">agent</a>
+  <a href="#post">post</a>
+  <a href="#stages">stages / stage</a>
+  <a href="#environment">environment</a>
+  <a href="#options">options</a>
+  <a href="#parameters">parameters</a>
+  <a href="#triggers">triggers</a>
+  <a href="#when">when</a>
+  <a href="#matrix">matrix</a>
+  <a href="#scripted">Scripted Pipeline</a>
+
+  <div class="toc-section">Core Steps</div>
+  <a href="#node-dir-ws">node / dir / ws</a>
+  <a href="#sh-bat-powershell">sh / bat / powershell / pwsh</a>
+  <a href="#echo-print">echo / print</a>
+  <a href="#error-handling">catchError / error / retry / timeout</a>
+  <a href="#file-ops">readFile / writeFile / fileExists</a>
+  <a href="#stash-unstash">stash / unstash</a>
+  <a href="#archive">archiveArtifacts</a>
+  <a href="#sleep-waituntil">sleep / waitUntil</a>
+  <a href="#isunix">isUnix</a>
+  <a href="#build-step">build (trigger job)</a>
+  <a href="#input-step">input</a>
+  <a href="#parallel-step">parallel</a>
+  <a href="#load-step">load</a>
+
+  <div class="toc-section">Credentials</div>
+  <a href="#credentials">credentials() helper</a>
+  <a href="#withcredentials">withCredentials</a>
+
+  <div class="toc-section">Utility Steps</div>
+  <a href="#find-files">findFiles</a>
+  <a href="#read-json-yaml">readJSON / readYaml / readProperties</a>
+  <a href="#write-json-yaml">writeJSON / writeYaml</a>
+  <a href="#zip-tar">zip / unzip / tar / untar</a>
+  <a href="#hash-steps">md5 / sha1 / sha256</a>
+  <a href="#misc-util">touch / tee / compareVersions</a>
+
+  <div class="toc-section">SCM</div>
+  <a href="#checkout">checkout</a>
+  <a href="#git-step">git</a>
+
+  <div class="toc-section">Notifications</div>
+  <a href="#mail-step">mail</a>
+  <a href="#slack">slackSend / slackUploadFile</a>
+
+  <div class="toc-section">Shared Libraries</div>
+  <a href="#lib-structure">Library Structure</a>
+  <a href="#lib-loading">Loading Libraries</a>
+  <a href="#lib-global-vars">Global Variables (vars/)</a>
+  <a href="#lib-classes">Classes (src/)</a>
+  <a href="#lib-resources">Resources</a>
+  <a href="#lib-writing">Writing Libraries</a>
+
+  <div class="toc-section">Best Practices</div>
+  <a href="#string-interpolation">String Interpolation</a>
+  <a href="#security">Security</a>
+  <a href="#env-vars">Environment Variables</a>
+  <a href="#failure-handling">Failure Handling</a>
+  <a href="#multi-agent">Multiple Agents</a>
+</nav>
+
+<div id="content">
+
+<!-- ============================================================ -->
+<section id="declarative">
+<h2>Declarative Pipeline</h2>
+<p>Declarative Pipeline provides a simplified, opinionated syntax with the <code>pipeline { }</code> block. It enforces structure: no semicolons as statement separators, statements on individual lines, blocks containing only sections, directives, steps, or assignments.</p>
+
+<pre><code>pipeline {
+    agent any
+    stages {
+        stage('Build') {
+            steps {
+                echo 'Building...'
+            }
+        }
+        stage('Test') {
+            steps {
+                echo 'Testing...'
+            }
+        }
+        stage('Deploy') {
+            steps {
+                echo 'Deploying...'
+            }
+        }
+    }
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="agent">
+<h2>agent</h2>
+<p>Specifies where the pipeline or stage executes. Required at the top level; optional within stages.</p>
+
+<h4>agent any</h4>
+<p>Execute on any available agent.</p>
+
+<h4>agent none</h4>
+<p>No global agent; each stage must declare its own. Useful for multi-platform builds.</p>
+
+<h4>agent { label 'labelName' }</h4>
+<p>Execute on an agent matching the label expression. Supports operators: <code>&amp;&amp;</code> (AND), <code>||</code> (OR), <code>!</code> (NOT), <code>-></code> (implies), <code>&lt;-></code> (iff).</p>
+<pre><code>agent { label 'windows &amp;&amp; unity' }</code></pre>
+
+<h4>agent { node { label 'labelName' customWorkspace '/path' } }</h4>
+<p>Like label but with additional options such as <code>customWorkspace</code>.</p>
+
+<h4>agent { docker { image 'node:18' } }</h4>
+<p>Execute inside a Docker container.</p>
+<pre><code>agent {
+    docker {
+        image 'maven:3.9-eclipse-temurin-17'
+        label 'docker'
+        args '-v /tmp:/tmp'
+    }
+}</code></pre>
+
+<h4>agent { dockerfile true }</h4>
+<p>Build and use a container from a <code>Dockerfile</code> in the repository.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="post">
+<h2>post</h2>
+<p>Defines actions to run after pipeline or stage completion. Each condition block runs only if the condition is met.</p>
+
+<table class="param-table">
+<tr><th>Condition</th><th>When it runs</th></tr>
+<tr><td>always</td><td>Always, regardless of status</td></tr>
+<tr><td>success</td><td>Only if current status is SUCCESS</td></tr>
+<tr><td>failure</td><td>Only if current status is FAILURE</td></tr>
+<tr><td>unstable</td><td>Only if current status is UNSTABLE (e.g. test failures)</td></tr>
+<tr><td>changed</td><td>Only if status differs from previous build</td></tr>
+<tr><td>fixed</td><td>Previous run was unsuccessful, current is SUCCESS</td></tr>
+<tr><td>regression</td><td>Previous run was SUCCESS, current is worse</td></tr>
+<tr><td>aborted</td><td>Build was manually aborted</td></tr>
+<tr><td>cleanup</td><td>Runs after all other post conditions</td></tr>
+</table>
+
+<pre><code>pipeline {
+    agent any
+    stages {
+        stage('Test') {
+            steps { sh 'make check' }
+        }
+    }
+    post {
+        always {
+            junit '**/target/*.xml'
+        }
+        failure {
+            mail to: 'team@example.com',
+                 subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: "Check: ${env.BUILD_URL}"
+        }
+    }
+}</code></pre>
+
+<div class="warning">Post actions in declarative pipelines run after node release if the build fails early. Ensure critical cleanup runs within the stage or use <code>always</code> blocks.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="stages">
+<h2>stages / stage</h2>
+<p><code>stages</code> contains a sequence of <code>stage</code> directives. Each <code>stage</code> must have a unique name and a <code>steps</code>, <code>stages</code> (sequential), <code>parallel</code>, or <code>matrix</code> block.</p>
+
+<h3>Sequential Stages</h3>
+<pre><code>stage('Parent') {
+    stages {
+        stage('First') { steps { echo 'first' } }
+        stage('Second') { steps { echo 'second' } }
+    }
+}</code></pre>
+
+<h3>Parallel Stages</h3>
+<pre><code>stage('Tests') {
+    failFast true
+    parallel {
+        stage('Unit') { steps { sh 'make unit' } }
+        stage('Integration') { steps { sh 'make integration' } }
+    }
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="environment">
+<h2>environment</h2>
+<p>Defines key-value pairs as environment variables. Can be top-level (all stages) or stage-level (scoped).</p>
+
+<pre><code>pipeline {
+    agent any
+    environment {
+        CC = 'clang'
+        DEPLOY_TO = 'production'
+    }
+    stages {
+        stage('Build') {
+            environment {
+                DEBUG_FLAGS = '-g'
+            }
+            steps {
+                sh 'printenv'
+            }
+        }
+    }
+}</code></pre>
+
+<h4>Dynamic Variables</h4>
+<pre><code>environment {
+    GIT_COMMIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
+}</code></pre>
+
+<h4>credentials() helper</h4>
+<pre><code>environment {
+    AWS_ACCESS_KEY_ID     = credentials('aws-key-id')
+    AWS_SECRET_ACCESS_KEY = credentials('aws-secret-key')
+    // For username/password: creates _USR and _PSW variants
+    DOCKER_CREDS = credentials('docker-hub-creds')
+    // DOCKER_CREDS = username:password
+    // DOCKER_CREDS_USR = username
+    // DOCKER_CREDS_PSW = password
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="options">
+<h2>options</h2>
+<p>Pipeline-wide configuration. Applied at the top level or per-stage.</p>
+
+<table class="param-table">
+<tr><th>Option</th><th>Description</th></tr>
+<tr><td>buildDiscarder(logRotator(...))</td><td>Manage build log retention</td></tr>
+<tr><td>disableConcurrentBuilds()</td><td>Prevent parallel executions of this pipeline</td></tr>
+<tr><td>disableResume()</td><td>Do not allow resume after controller restart</td></tr>
+<tr><td>timeout(time: 1, unit: 'HOURS')</td><td>Global timeout for entire pipeline</td></tr>
+<tr><td>retry(3)</td><td>Retry entire pipeline on failure</td></tr>
+<tr><td>timestamps()</td><td>Prepend timestamps to console output</td></tr>
+<tr><td>skipDefaultCheckout()</td><td>Do not auto-checkout SCM in agent</td></tr>
+<tr><td>skipStagesAfterUnstable()</td><td>Skip remaining stages if build becomes unstable</td></tr>
+<tr><td>preserveStashes(buildCount: 5)</td><td>Preserve stashes from completed builds for replay</td></tr>
+<tr><td>ansiColor('xterm')</td><td>Enable ANSI color in console</td></tr>
+</table>
+
+<pre><code>options {
+    buildDiscarder(logRotator(numToKeepStr: '10'))
+    timeout(time: 1, unit: 'HOURS')
+    timestamps()
+    disableConcurrentBuilds()
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="parameters">
+<h2>parameters</h2>
+<p>User-provided inputs for the pipeline. Available on second run onwards (first run defines them). Access via <code>params.NAME</code>.</p>
+
+<table class="param-table">
+<tr><th>Type</th><th>Syntax</th></tr>
+<tr><td>string</td><td>string(name: 'DEPLOY_ENV', defaultValue: 'staging', description: '...')</td></tr>
+<tr><td>text</td><td>text(name: 'CONFIG', defaultValue: '', description: '...')</td></tr>
+<tr><td>booleanParam</td><td>booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: '...')</td></tr>
+<tr><td>choice</td><td>choice(name: 'PLATFORM', choices: ['steam', 'ios', 'android'], description: '...')</td></tr>
+<tr><td>password</td><td>password(name: 'SECRET', defaultValue: '', description: '...')</td></tr>
+</table>
+
+<pre><code>pipeline {
+    agent any
+    parameters {
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build')
+        booleanParam(name: 'DEPLOY', defaultValue: false, description: 'Deploy after build?')
+        choice(name: 'ENVIRONMENT', choices: ['dev', 'staging', 'prod'], description: 'Target')
+    }
+    stages {
+        stage('Example') {
+            steps {
+                echo "Building ${params.BRANCH} for ${params.ENVIRONMENT}"
+            }
+        }
+    }
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="triggers">
+<h2>triggers</h2>
+<p>Automated pipeline re-execution.</p>
+
+<table class="param-table">
+<tr><th>Trigger</th><th>Description</th></tr>
+<tr><td>cron('H */4 * * 1-5')</td><td>Cron schedule (H = hash for load distribution)</td></tr>
+<tr><td>pollSCM('H */5 * * *')</td><td>Poll SCM for changes on schedule</td></tr>
+<tr><td>upstream(upstreamProjects: 'job1,job2', threshold: hudson.model.Result.SUCCESS)</td><td>Trigger when upstream jobs complete</td></tr>
+</table>
+
+<pre><code>triggers {
+    pollSCM('H/5 * * * *')
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="when">
+<h2>when</h2>
+<p>Conditional stage execution. Evaluated before the stage's <code>agent</code> by default; use <code>beforeAgent true</code> to control this.</p>
+
+<table class="param-table">
+<tr><th>Condition</th><th>Example</th></tr>
+<tr><td>branch</td><td>when { branch 'main' }</td></tr>
+<tr><td>branch (pattern)</td><td>when { branch pattern: 'release-*', comparator: 'GLOB' }</td></tr>
+<tr><td>environment</td><td>when { environment name: 'DEPLOY', value: 'true' }</td></tr>
+<tr><td>expression</td><td>when { expression { return params.DEPLOY } }</td></tr>
+<tr><td>not</td><td>when { not { branch 'main' } }</td></tr>
+<tr><td>allOf</td><td>when { allOf { branch 'main'; environment name: 'DEPLOY', value: 'true' } }</td></tr>
+<tr><td>anyOf</td><td>when { anyOf { branch 'main'; branch 'staging' } }</td></tr>
+<tr><td>tag</td><td>when { tag 'v*' }</td></tr>
+<tr><td>changelog</td><td>when { changelog '.*\\[ci\\].*' }</td></tr>
+<tr><td>changeset</td><td>when { changeset '**/*.js' }</td></tr>
+<tr><td>triggeredBy</td><td>when { triggeredBy 'TimerTrigger' }</td></tr>
+<tr><td>beforeAgent</td><td>when { beforeAgent true; branch 'main' }</td></tr>
+<tr><td>beforeInput</td><td>when { beforeInput true; branch 'main' }</td></tr>
+<tr><td>beforeOptions</td><td>when { beforeOptions true; branch 'main' }</td></tr>
+</table>
+
+<pre><code>stage('Deploy') {
+    when {
+        allOf {
+            branch 'main'
+            expression { return params.DEPLOY == true }
+        }
+    }
+    steps {
+        sh './deploy.sh'
+    }
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="matrix">
+<h2>matrix</h2>
+<p>Multi-dimensional parallel execution. Define axes and optionally exclude combinations.</p>
+
+<pre><code>stage('Test') {
+    matrix {
+        axes {
+            axis {
+                name 'PLATFORM'
+                values 'linux', 'windows', 'mac'
+            }
+            axis {
+                name 'JAVA'
+                values '11', '17', '21'
+            }
+        }
+        excludes {
+            exclude {
+                axis { name 'PLATFORM'; values 'mac' }
+                axis { name 'JAVA'; values '11' }
+            }
+        }
+        stages {
+            stage('Build &amp; Test') {
+                steps {
+                    echo "Testing on ${PLATFORM} with Java ${JAVA}"
+                }
+            }
+        }
+    }
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="scripted">
+<h2>Scripted Pipeline</h2>
+<p>Uses Groovy as its foundation, offering flexibility through general-purpose constructs. Wrapped in <code>node { }</code> blocks.</p>
+
+<pre><code>node('unity') {
+    stage('Build') {
+        checkout scm
+        sh 'make'
+    }
+    stage('Test') {
+        try {
+            sh 'make check'
+        } catch (e) {
+            currentBuild.result = 'UNSTABLE'
+            throw e
+        } finally {
+            junit '**/target/*.xml'
+        }
+    }
+}</code></pre>
+
+<p>Use the <code>script { }</code> step as an escape hatch in Declarative Pipelines for complex Groovy logic.</p>
+<pre><code>steps {
+    script {
+        def browsers = ['chrome', 'firefox']
+        for (b in browsers) {
+            echo "Testing on ${b}"
+        }
+    }
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="node-dir-ws">
+<h2>node / dir / ws</h2>
+
+<h3>node</h3>
+<p>Allocates an executor on an agent. Label expressions filter which agents can run.</p>
+<pre><code>node('windows &amp;&amp; unity') {
+    // runs on a Windows agent with the 'unity' label
+}
+
+node {
+    // runs on any available agent
+}</code></pre>
+
+<h3>dir</h3>
+<p>Changes working directory for enclosed steps. Relative to current workspace.</p>
+<pre><code>dir('subdir') {
+    sh 'ls -la'
+}</code></pre>
+
+<h3>ws</h3>
+<p>Custom workspace allocation. Automatic suffix (<code>@2</code>) if same path used concurrently.</p>
+<pre><code>ws('/opt/build/custom-workspace') {
+    sh 'make'
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="sh-bat-powershell">
+<h2>sh / bat / powershell / pwsh</h2>
+<p>Execute scripts on agents. All share common optional parameters.</p>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>script</td><td>String</td><td>The script to execute (required)</td></tr>
+<tr><td>returnStatus</td><td>boolean</td><td>Return exit code instead of failing on non-zero</td></tr>
+<tr><td>returnStdout</td><td>boolean</td><td>Return stdout as String (use .trim()!)</td></tr>
+<tr><td>encoding</td><td>String</td><td>Output encoding (e.g. 'UTF-8')</td></tr>
+<tr><td>label</td><td>String</td><td>Label for Blue Ocean display</td></tr>
+</table>
+
+<h4>sh (Unix/Linux/macOS)</h4>
+<pre><code>// Simple
+sh 'echo hello'
+
+// Multi-line
+sh '''
+    echo "Building..."
+    make clean
+    make all
+'''
+
+// Capture output
+def version = sh(returnStdout: true, script: 'cat VERSION').trim()
+
+// Check exit code
+def status = sh(returnStatus: true, script: 'make test')
+if (status != 0) {
+    echo "Tests failed with status ${status}"
+}</code></pre>
+
+<h4>bat (Windows Batch)</h4>
+<pre><code>bat 'echo Building on Windows'
+bat 'msbuild /p:Configuration=Release'
+
+// Multi-line
+bat '''
+    echo off
+    set UNITY_PATH=C:\\UnityEditors\\2022.3.0f1
+    "%UNITY_PATH%\\Editor\\Unity.exe" -quit -batchmode
+'''</code></pre>
+
+<h4>powershell (Windows PowerShell 3+)</h4>
+<pre><code>powershell 'Get-ChildItem -Recurse'
+powershell returnStdout: true, script: '$PSVersionTable.PSVersion'</code></pre>
+
+<h4>pwsh (PowerShell Core 6+, cross-platform)</h4>
+<pre><code>pwsh 'Write-Output "Hello from PowerShell Core"'</code></pre>
+
+<div class="warning"><strong>returnStdout</strong> includes a trailing newline. Always use <code>.trim()</code> on the result.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="echo-print">
+<h2>echo / print</h2>
+<p>Print a message to the build console log.</p>
+<pre><code>echo 'Hello, World!'
+echo "Build number: ${env.BUILD_NUMBER}"</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="error-handling">
+<h2>catchError / error / retry / timeout / waitUntil / warnError</h2>
+
+<h3>catchError</h3>
+<p>Catch an error, set build/stage result, but continue the pipeline.</p>
+<pre><code>catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+    sh 'make test'
+}
+// Pipeline continues even if 'make test' fails</code></pre>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>buildResult</td><td>String</td><td>Result to set: SUCCESS, UNSTABLE, FAILURE, NOT_BUILT, ABORTED</td></tr>
+<tr><td>stageResult</td><td>String</td><td>Stage result to set</td></tr>
+<tr><td>catchInterruptions</td><td>boolean</td><td>Catch build interruptions (abort). Default: true</td></tr>
+<tr><td>message</td><td>String</td><td>Message to print if error is caught</td></tr>
+</table>
+
+<h3>error</h3>
+<p>Signal an error, stopping the current stage/pipeline.</p>
+<pre><code>error 'Deployment target not specified!'</code></pre>
+
+<h3>retry</h3>
+<p>Repeat the block up to N times if it fails.</p>
+<pre><code>retry(3) {
+    sh 'curl -f https://example.com/api/health'
+}</code></pre>
+
+<h3>timeout</h3>
+<p>Abort the block if it exceeds the time limit.</p>
+<pre><code>timeout(time: 30, unit: 'MINUTES') {
+    sh 'make build'
+}
+
+// With activity flag — resets timer on each log output
+timeout(time: 5, unit: 'MINUTES', activity: true) {
+    sh 'long-running-command'
+}</code></pre>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>time</td><td>int</td><td>Timeout duration</td></tr>
+<tr><td>unit</td><td>String</td><td>NANOSECONDS, MICROSECONDS, MILLISECONDS, SECONDS, MINUTES, HOURS, DAYS</td></tr>
+<tr><td>activity</td><td>boolean</td><td>Timeout resets on console output activity</td></tr>
+</table>
+
+<h3>waitUntil</h3>
+<p>Repeatedly runs body until it returns <code>true</code>. Increases wait between retries.</p>
+<pre><code>waitUntil {
+    def status = sh(returnStatus: true, script: 'curl -sf http://localhost:8080/health')
+    return status == 0
+}</code></pre>
+
+<h3>warnError</h3>
+<p>Like catchError but sets build to UNSTABLE on exception.</p>
+<pre><code>warnError('Lint check had issues') {
+    sh 'npm run lint'
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="file-ops">
+<h2>readFile / writeFile / fileExists / deleteDir</h2>
+
+<h3>readFile</h3>
+<p>Read a file from the workspace as a String.</p>
+<pre><code>def content = readFile(file: 'config.json', encoding: 'UTF-8')
+// Short form:
+def content = readFile 'config.json'</code></pre>
+
+<h3>writeFile</h3>
+<p>Write text content to a file in the workspace.</p>
+<pre><code>writeFile(file: 'output.txt', text: 'Hello World', encoding: 'UTF-8')</code></pre>
+
+<h3>fileExists</h3>
+<p>Check if a file exists in the workspace. Returns boolean.</p>
+<pre><code>if (fileExists('Dockerfile')) {
+    echo 'Found Dockerfile'
+}</code></pre>
+
+<h3>deleteDir</h3>
+<p>Recursively delete the current directory. Typically used for workspace cleanup.</p>
+<pre><code>dir('build-output') {
+    deleteDir()
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="stash-unstash">
+<h2>stash / unstash</h2>
+<p>Save and restore files between stages, even across different nodes.</p>
+
+<h3>stash</h3>
+<pre><code>stash(name: 'app-jar', includes: '**/target/*.jar', excludes: '**/test-*')
+// Short form for name only:
+stash name: 'source', includes: '**/*'</code></pre>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>name</td><td>String</td><td>Unique name for this stash (required)</td></tr>
+<tr><td>includes</td><td>String</td><td>Ant-style include pattern</td></tr>
+<tr><td>excludes</td><td>String</td><td>Ant-style exclude pattern</td></tr>
+<tr><td>allowEmpty</td><td>boolean</td><td>Allow stashing zero files (default: false)</td></tr>
+<tr><td>useDefaultExcludes</td><td>boolean</td><td>Use default Ant excludes (default: true)</td></tr>
+</table>
+
+<h3>unstash</h3>
+<pre><code>unstash 'app-jar'</code></pre>
+
+<div class="warning">Stashed files are deleted after the pipeline completes. For persistent artifacts, use <code>archiveArtifacts</code>.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="archive">
+<h2>archiveArtifacts</h2>
+<p>Archive build outputs on the Jenkins controller for download.</p>
+<pre><code>archiveArtifacts artifacts: '**/build/*.apk', fingerprint: true
+
+// Allow archiving even if no files match
+archiveArtifacts artifacts: '**/*.log', allowEmptyArchive: true</code></pre>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>artifacts</td><td>String</td><td>Ant-style file pattern (required)</td></tr>
+<tr><td>fingerprint</td><td>boolean</td><td>Record fingerprints for tracking</td></tr>
+<tr><td>allowEmptyArchive</td><td>boolean</td><td>Don't fail if no matches (default: false)</td></tr>
+<tr><td>excludes</td><td>String</td><td>Ant-style exclude pattern</td></tr>
+<tr><td>followSymlinks</td><td>boolean</td><td>Follow symbolic links (default: true)</td></tr>
+<tr><td>onlyIfSuccessful</td><td>boolean</td><td>Archive only on success (default: false)</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<section id="sleep-waituntil">
+<h2>sleep / unstable</h2>
+
+<h3>sleep</h3>
+<p>Pause execution.</p>
+<pre><code>sleep 10           // 10 seconds
+sleep time: 2, unit: 'MINUTES'</code></pre>
+
+<h3>unstable</h3>
+<p>Set the stage result to UNSTABLE.</p>
+<pre><code>unstable(message: 'Test coverage below threshold')</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="isunix">
+<h2>isUnix</h2>
+<p>Returns <code>true</code> if the current agent is a Unix-like system. Must be called within a <code>node</code> context.</p>
+<pre><code>node {
+    if (isUnix()) {
+        sh 'make'
+    } else {
+        bat 'msbuild'
+    }
+}</code></pre>
+
+<div class="danger"><strong>Do not use <code>System.getProperty('os.name')</code></strong> — this returns the Jenkins <em>controller</em> OS, not the agent OS. Always use <code>isUnix()</code>.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="build-step">
+<h2>build (Trigger Downstream Job)</h2>
+<p>Trigger another Jenkins job and optionally wait for its result.</p>
+
+<pre><code>// Simple trigger, wait for completion
+build job: 'downstream-job'
+
+// With parameters
+build job: 'deploy',
+      parameters: [
+          string(name: 'ENVIRONMENT', value: 'production'),
+          booleanParam(name: 'DRY_RUN', value: false)
+      ]
+
+// Don't propagate failure
+build job: 'optional-job', propagate: false
+
+// Fire and forget
+build job: 'notification-job', wait: false
+
+// Relative path (same folder)
+build job: '../sibling-folder/other-job'
+
+// Absolute path
+build job: '/top-folder/nested-folder/job-name'</code></pre>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>job</td><td>String</td><td>Job name or path (required)</td></tr>
+<tr><td>parameters</td><td>List</td><td>Parameters to pass</td></tr>
+<tr><td>propagate</td><td>boolean</td><td>Inherit downstream result (default: true)</td></tr>
+<tr><td>wait</td><td>boolean</td><td>Wait for completion (default: true)</td></tr>
+<tr><td>waitForStart</td><td>boolean</td><td>Wait only until started (default: false)</td></tr>
+<tr><td>quietPeriod</td><td>int</td><td>Seconds to wait before building</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<section id="input-step">
+<h2>input</h2>
+<p>Pause pipeline and wait for user interaction. Provides proceed/abort buttons with optional parameter collection.</p>
+
+<pre><code>// Simple approval gate
+input message: 'Deploy to production?', ok: 'Deploy'
+
+// With parameters — single param returns its value directly
+def version = input(
+    message: 'Select version',
+    parameters: [
+        choice(name: 'VERSION', choices: ['1.0', '2.0', '3.0'], description: 'Release version')
+    ]
+)
+
+// Multiple params return a map
+def userInput = input(
+    message: 'Configure deployment',
+    parameters: [
+        string(name: 'TAG', defaultValue: 'latest', description: 'Docker tag'),
+        booleanParam(name: 'NOTIFY', defaultValue: true, description: 'Send notification')
+    ]
+)
+echo "Tag: ${userInput.TAG}, Notify: ${userInput.NOTIFY}"</code></pre>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>message</td><td>String</td><td>Prompt message (required)</td></tr>
+<tr><td>ok</td><td>String</td><td>Custom proceed button text</td></tr>
+<tr><td>cancel</td><td>String</td><td>Custom abort button text</td></tr>
+<tr><td>id</td><td>String</td><td>Unique ID for external responses</td></tr>
+<tr><td>parameters</td><td>List</td><td>Parameters to collect</td></tr>
+<tr><td>submitter</td><td>String</td><td>Comma-separated user IDs/group names allowed to submit</td></tr>
+<tr><td>submitterParameter</td><td>String</td><td>Env var name to store who submitted</td></tr>
+</table>
+
+<div class="tip"><strong>Tip:</strong> Wrap <code>input</code> outside of <code>node</code> blocks to avoid holding an executor while waiting for approval.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="parallel-step">
+<h2>parallel</h2>
+<p>Execute branches concurrently. In Declarative, use the <code>parallel</code> directive within a stage. In Scripted, use the <code>parallel</code> step.</p>
+
+<h4>Declarative</h4>
+<pre><code>stage('Test') {
+    failFast true
+    parallel {
+        stage('Unit Tests') {
+            agent { label 'linux' }
+            steps { sh 'make unit-test' }
+        }
+        stage('Integration Tests') {
+            agent { label 'linux' }
+            steps { sh 'make integration-test' }
+        }
+    }
+}</code></pre>
+
+<h4>Scripted</h4>
+<pre><code>parallel(
+    linux: {
+        node('linux') { sh 'make test' }
+    },
+    windows: {
+        node('windows') { bat 'make test' }
+    },
+    failFast: true
+)</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="load-step">
+<h2>load</h2>
+<p>Evaluate a Groovy source file from the workspace.</p>
+<pre><code>def pipeline = load 'pipeline.groovy'
+pipeline.functionA()
+
+// pipeline.groovy typically ends with:
+// return this</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="credentials">
+<h2>credentials() Helper</h2>
+<p>Used within the <code>environment</code> directive in Declarative Pipeline to bind credentials to env vars.</p>
+
+<h4>Secret Text</h4>
+<pre><code>environment {
+    API_TOKEN = credentials('my-api-token')
+    // API_TOKEN contains the secret string
+}</code></pre>
+
+<h4>Username + Password</h4>
+<pre><code>environment {
+    CREDS = credentials('my-user-pass')
+    // CREDS     = "username:password"
+    // CREDS_USR = "username"
+    // CREDS_PSW = "password"
+}</code></pre>
+
+<h4>Secret File</h4>
+<pre><code>environment {
+    KUBECONFIG = credentials('my-kubeconfig')
+    // KUBECONFIG = path to temporary file containing the secret
+}</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="withcredentials">
+<h2>withCredentials</h2>
+<p>Bind credentials to variables within a scoped block. Works in both Declarative and Scripted pipelines. Secrets are masked in console output.</p>
+
+<pre><code>// Username and password
+withCredentials([usernamePassword(
+    credentialsId: 'docker-hub',
+    usernameVariable: 'DOCKER_USER',
+    passwordVariable: 'DOCKER_PASS'
+)]) {
+    sh 'docker login -u $DOCKER_USER -p $DOCKER_PASS'
+}
+
+// Secret text
+withCredentials([string(credentialsId: 'api-key', variable: 'API_KEY')]) {
+    sh 'curl -H "Authorization: Bearer $API_KEY" https://api.example.com'
+}
+
+// Secret file
+withCredentials([file(credentialsId: 'gcloud-key', variable: 'GCLOUD_KEY_FILE')]) {
+    sh 'gcloud auth activate-service-account --key-file=$GCLOUD_KEY_FILE'
+}
+
+// SSH key
+withCredentials([sshUserPrivateKey(
+    credentialsId: 'deploy-key',
+    keyFileVariable: 'SSH_KEY',
+    usernameVariable: 'SSH_USER'
+)]) {
+    sh 'ssh -i $SSH_KEY $SSH_USER@server.example.com "deploy.sh"'
+}
+
+// Multiple bindings
+withCredentials([
+    string(credentialsId: 'slack-token', variable: 'SLACK_TOKEN'),
+    usernamePassword(credentialsId: 'nexus', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')
+]) {
+    sh 'upload-artifact.sh'
+}
+
+// AWS credentials
+withCredentials([aws(credentialsId: 'aws-creds',
+                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+    sh 'aws s3 ls'
+}</code></pre>
+
+<h4>Supported Binding Types</h4>
+<table class="param-table">
+<tr><th>Type</th><th>Parameters</th></tr>
+<tr><td>string</td><td>credentialsId, variable</td></tr>
+<tr><td>usernamePassword</td><td>credentialsId, usernameVariable, passwordVariable</td></tr>
+<tr><td>usernameColonPassword</td><td>credentialsId, variable</td></tr>
+<tr><td>sshUserPrivateKey</td><td>credentialsId, keyFileVariable, usernameVariable, passphraseVariable</td></tr>
+<tr><td>file</td><td>credentialsId, variable</td></tr>
+<tr><td>certificate</td><td>credentialsId, keystoreVariable, passwordVariable, aliasVariable</td></tr>
+<tr><td>aws</td><td>credentialsId, accessKeyVariable, secretKeyVariable</td></tr>
+<tr><td>dockerCert</td><td>credentialsId, variable</td></tr>
+<tr><td>gitUsernamePassword</td><td>credentialsId, gitToolName</td></tr>
+</table>
+
+<div class="danger"><strong>Security:</strong> Use single quotes in <code>sh</code> steps to prevent Groovy interpolation of secrets. Double-quoted strings expose secrets in process arguments.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="find-files">
+<h2>findFiles</h2>
+<p>Locate files in the workspace using Ant-style glob patterns.</p>
+<pre><code>def files = findFiles(glob: '**/*.apk')
+echo "Found ${files.length} APKs"
+for (f in files) {
+    echo "${f.name} — ${f.path} — ${f.length} bytes"
+}
+
+// With excludes
+def files = findFiles(glob: '**/*.jar', excludes: '**/test-*.jar')</code></pre>
+
+<p>Returns an array of <code>FileWrapper</code> objects with properties: <code>name</code>, <code>path</code>, <code>directory</code> (boolean), <code>length</code>, <code>lastModified</code>.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="read-json-yaml">
+<h2>readJSON / readYaml / readCSV / readProperties</h2>
+
+<h3>readJSON</h3>
+<pre><code>// From file
+def config = readJSON file: 'config.json'
+echo config.version
+
+// From text
+def data = readJSON text: '{"key": "value"}'
+
+// Return as Map (default) or as String
+def config = readJSON file: 'config.json', returnPojo: true</code></pre>
+
+<h3>readYaml</h3>
+<pre><code>def config = readYaml file: 'config.yaml'</code></pre>
+
+<h3>readCSV</h3>
+<pre><code>def records = readCSV file: 'data.csv'</code></pre>
+
+<h3>readProperties</h3>
+<pre><code>def props = readProperties file: 'build.properties'
+echo props['version']
+
+// With defaults
+def props = readProperties file: 'build.properties', defaults: ['version': '0.0.0']
+
+// With interpolation
+def props = readProperties file: 'config.properties', interpolate: true</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="write-json-yaml">
+<h2>writeJSON / writeYaml</h2>
+
+<h3>writeJSON</h3>
+<pre><code>def data = [version: '1.0', build: env.BUILD_NUMBER]
+writeJSON file: 'output.json', json: data, pretty: 4</code></pre>
+
+<h3>writeYaml</h3>
+<pre><code>def data = [name: 'myapp', version: '2.0']
+writeYaml file: 'output.yaml', data: data</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="zip-tar">
+<h2>zip / unzip / tar / untar</h2>
+
+<pre><code>// Create ZIP
+zip zipFile: 'build-output.zip', dir: 'build/', glob: '**/*.dll'
+
+// Extract ZIP
+unzip zipFile: 'archive.zip', dir: 'extracted/'
+
+// Create TAR.GZ
+tar file: 'build.tar.gz', dir: 'build/', compress: true
+
+// Extract TAR
+untar file: 'build.tar.gz', dir: 'extracted/'</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="hash-steps">
+<h2>md5 / sha1 / sha256</h2>
+<p>Calculate file checksums.</p>
+<pre><code>def hash = sha256(file: 'artifact.zip')
+echo "SHA-256: ${hash}"
+
+def md5Hash = md5(file: 'build.apk')
+
+// Verify checksums
+verifySha256(file: 'artifact.zip', hash: 'expected_hash_here')</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="misc-util">
+<h2>touch / tee / compareVersions / nodesByLabel / pwd</h2>
+
+<h3>touch</h3>
+<pre><code>touch file: 'timestamp.txt'
+touch file: 'marker.txt', timestamp: 0  // epoch</code></pre>
+
+<h3>tee</h3>
+<pre><code>tee('build.log') {
+    sh 'make all'  // output goes to both console and build.log
+}</code></pre>
+
+<h3>compareVersions</h3>
+<pre><code>def result = compareVersions v1: '1.10.0', v2: '1.9.0'
+// Returns: 1 (v1 > v2), 0 (equal), -1 (v1 &lt; v2)</code></pre>
+
+<h3>nodesByLabel</h3>
+<pre><code>def nodes = nodesByLabel label: 'unity', offline: false</code></pre>
+
+<h3>pwd</h3>
+<pre><code>def workspace = pwd()
+def tempDir = pwd(tmp: true)  // temporary directory</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="checkout">
+<h2>checkout</h2>
+<p>Check out source code from version control. Supports Git, SVN, and many other SCMs.</p>
+
+<pre><code>// Checkout the SCM configured in the job
+checkout scm
+
+// Git checkout with specific config
+checkout([
+    $class: 'GitSCM',
+    branches: [[name: '*/main']],
+    userRemoteConfigs: [[
+        url: 'https://github.com/org/repo.git',
+        credentialsId: 'github-token'
+    ]],
+    extensions: [
+        [$class: 'CloneOption', depth: 1, shallow: true],
+        [$class: 'CleanBeforeCheckout']
+    ]
+])</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="git-step">
+<h2>git</h2>
+<p>Simplified Git checkout step.</p>
+<pre><code>git url: 'https://github.com/org/repo.git', branch: 'main'
+git url: 'https://github.com/org/repo.git', credentialsId: 'my-creds', branch: 'develop'</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="mail-step">
+<h2>mail</h2>
+<p>Send an email.</p>
+<pre><code>mail(
+    to: 'dev@example.com',
+    subject: "Build ${currentBuild.result}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+    body: "Check console output at ${env.BUILD_URL}"
+)</code></pre>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>to</td><td>String</td><td>Recipient(s)</td></tr>
+<tr><td>subject</td><td>String</td><td>Email subject</td></tr>
+<tr><td>body</td><td>String</td><td>Email body</td></tr>
+<tr><td>cc</td><td>String</td><td>CC recipients</td></tr>
+<tr><td>bcc</td><td>String</td><td>BCC recipients</td></tr>
+<tr><td>from</td><td>String</td><td>Sender address</td></tr>
+<tr><td>replyTo</td><td>String</td><td>Reply-to address</td></tr>
+<tr><td>mimeType</td><td>String</td><td>MIME type (e.g. 'text/html')</td></tr>
+<tr><td>charset</td><td>String</td><td>Character set</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<section id="slack">
+<h2>slackSend / slackUploadFile</h2>
+
+<h3>slackSend</h3>
+<pre><code>// Simple message
+slackSend "Build Started: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+
+// With color and channel
+slackSend(
+    channel: '#builds',
+    color: 'good',        // 'good', 'warning', 'danger', or hex '#FF0000'
+    message: "Build Succeeded: ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+)
+
+// Using bot user token from credentials
+slackSend(
+    tokenCredentialId: 'slack-bot-token',
+    botUser: true,
+    channel: '#deployments',
+    color: 'danger',
+    message: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}\n${env.BUILD_URL}"
+)
+
+// Update existing message
+def response = slackSend(channel: '#builds', message: 'Build starting...')
+// later:
+slackSend(channel: response.channelId, message: 'Build complete!', timestamp: response.ts)</code></pre>
+
+<table class="param-table">
+<tr><th>Parameter</th><th>Type</th><th>Description</th></tr>
+<tr><td>message</td><td>String</td><td>Message text</td></tr>
+<tr><td>channel</td><td>String</td><td>Channel override (comma-separated for multiple)</td></tr>
+<tr><td>color</td><td>String</td><td>good / warning / danger / hex code</td></tr>
+<tr><td>tokenCredentialId</td><td>String</td><td>Credentials plugin secret ID</td></tr>
+<tr><td>botUser</td><td>boolean</td><td>Use custom bot user token</td></tr>
+<tr><td>username</td><td>String</td><td>Custom bot name (requires botUser)</td></tr>
+<tr><td>iconEmoji</td><td>String</td><td>Custom emoji icon (requires botUser)</td></tr>
+<tr><td>failOnError</td><td>boolean</td><td>Abort pipeline on send failure</td></tr>
+<tr><td>timestamp</td><td>String</td><td>Update existing message by timestamp</td></tr>
+<tr><td>notifyCommitters</td><td>boolean</td><td>DM commit authors</td></tr>
+</table>
+
+<h3>slackUploadFile</h3>
+<pre><code>slackUploadFile(filePath: 'build.log', initialComment: 'Build log attached', channel: '#builds')</code></pre>
+
+<h3>slackUserIdFromEmail</h3>
+<pre><code>def userId = slackUserIdFromEmail(email: 'dev@example.com', tokenCredentialId: 'slack-token', botUser: true)</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="lib-structure">
+<h2>Shared Library Structure</h2>
+<pre><code>(root)
++- src/                          # Groovy source files (added to classpath)
+|   +- org/
+|       +- foo/
+|           +- Bar.groovy        # for org.foo.Bar class
++- vars/                         # Global variables / custom steps
+|   +- foo.groovy                # defines the 'foo' global variable
+|   +- foo.txt                   # help documentation for 'foo'
++- resources/                    # Non-Groovy files (external libraries only)
+|   +- org/
+|       +- foo/
+|           +- bar.json          # loaded via libraryResource step</code></pre>
+
+<ul>
+<li><strong>src/</strong> — Standard Java directory structure, compiled and added to classpath</li>
+<li><strong>vars/</strong> — On-demand singletons; filenames become Pipeline variable names</li>
+<li><strong>resources/</strong> — Static files loaded via <code>libraryResource</code> step</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="lib-loading">
+<h2>Loading Libraries</h2>
+
+<h4>@Library annotation</h4>
+<pre><code>// Load single library
+@Library('my-shared-library') _
+
+// Load specific version (branch, tag, commit)
+@Library('my-shared-library@1.0') _
+@Library('my-shared-library@main') _
+
+// Load multiple libraries
+@Library(['my-shared-library', 'otherlib@abc1234']) _
+
+// Import classes from src/
+@Library('somelib')
+import com.mycorp.pipeline.somelib.UsefulClass</code></pre>
+
+<div class="warning"><strong>Do not</strong> <code>import</code> global variables from <code>vars/</code>. This forces the compiler to interpret fields and methods as <code>static</code>, causing confusing errors.</div>
+
+<h4>Dynamic loading (library step)</h4>
+<pre><code>// Load at runtime
+library 'my-shared-library'
+
+// Specific version
+library 'my-shared-library@main'
+
+// Computed version
+library "my-shared-library@${BRANCH_NAME}"
+
+// Access src/ classes dynamically
+library('my-shared-library').com.mycorp.pipeline.Utils.someStaticMethod()
+
+// With explicit retriever (no preconfiguration needed)
+library identifier: 'custom-lib@master', retriever: modernSCM([
+    $class: 'GitSCMSource',
+    remote: 'git@github.com:org/jenkins-utils.git',
+    credentialsId: 'my-key'
+])</code></pre>
+
+<h4>Library Configuration</h4>
+<ul>
+<li><strong>Global Trusted Libraries:</strong> Manage Jenkins &rarr; System &rarr; Global Trusted Pipeline Libraries. Run outside sandbox — full Jenkins API access.</li>
+<li><strong>Folder-level Libraries:</strong> Scoped to folder and subfolders. Always untrusted (sandboxed).</li>
+<li><strong>Implicit loading:</strong> Libraries marked "Load implicitly" are auto-loaded for all pipelines.</li>
+</ul>
+
+<h4>Testing Library PRs (GitHub)</h4>
+<pre><code>@Library('my-shared-library@pull/123/head') _</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="lib-global-vars">
+<h2>Global Variables (vars/)</h2>
+<p>Scripts in <code>vars/</code> are instantiated as on-demand singletons. Multiple methods in one file:</p>
+
+<pre><code>// vars/log.groovy
+def info(message) {
+    echo "INFO: ${message}"
+}
+
+def warning(message) {
+    echo "WARNING: ${message}"
+}
+
+// Jenkinsfile usage:
+log.info 'Starting'
+log.warning 'Nothing to do!'</code></pre>
+
+<h4>Custom Steps (call method)</h4>
+<pre><code>// vars/sayHello.groovy
+def call(String name = 'human') {
+    echo "Hello, ${name}."
+}
+
+// Jenkinsfile:
+sayHello 'Joe'
+sayHello()  // uses default</code></pre>
+
+<h4>Block-accepting Steps</h4>
+<pre><code>// vars/windows.groovy
+def call(Closure body) {
+    node('windows') {
+        body()
+    }
+}
+
+// Jenkinsfile:
+windows {
+    bat 'cmd /?'
+}</code></pre>
+
+<h4>DSL-style Steps</h4>
+<pre><code>// vars/buildPlugin.groovy
+def call(Map config) {
+    node {
+        git url: "https://github.com/jenkinsci/${config.name}-plugin.git"
+        sh 'mvn install'
+        mail to: '...', subject: "${config.name} plugin build", body: '...'
+    }
+}
+
+// Jenkinsfile:
+buildPlugin name: 'git'</code></pre>
+
+<div class="warning">In Declarative Pipeline, method calls on library objects outside <code>script { }</code> blocks will fail (<a href="https://issues.jenkins.io/browse/JENKINS-42360">JENKINS-42360</a>). Wrap in <code>script { }</code>.</div>
+
+<h4>Using @Field for Constants</h4>
+<pre><code>// vars/myLib.groovy
+@groovy.transform.Field
+def MY_CONSTANT = "some-value"
+
+def call() {
+    echo MY_CONSTANT
+}</code></pre>
+
+<div class="tip"><strong>Tip:</strong> Global variables should be stateless. State is lost on controller restart. Use static classes or local instantiation instead.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="lib-classes">
+<h2>Classes (src/)</h2>
+<p>Library classes in <code>src/</code> cannot directly call Pipeline steps. Two patterns:</p>
+
+<h4>Pattern 1: Script-style class (return this)</h4>
+<pre><code>// src/org/foo/Zot.groovy
+package org.foo
+
+def checkOutFrom(repo) {
+    git url: "git@github.com:jenkinsci/${repo}"
+}
+
+return this
+
+// Usage:
+def z = new org.foo.Zot()
+z.checkOutFrom('my-repo')</code></pre>
+
+<h4>Pattern 2: Pass steps explicitly</h4>
+<pre><code>// src/org/foo/Utilities.groovy
+package org.foo
+
+class Utilities implements Serializable {
+    def steps
+    Utilities(steps) { this.steps = steps }
+
+    def mvn(args) {
+        steps.sh "${steps.tool 'Maven'}/bin/mvn -o ${args}"
+    }
+}
+
+// Jenkinsfile:
+@Library('utils') import org.foo.Utilities
+def utils = new Utilities(this)
+node {
+    utils.mvn 'clean package'
+}</code></pre>
+
+<h4>Pattern 3: Static methods with script reference</h4>
+<pre><code>// src/org/foo/Utilities.groovy
+package org.foo
+
+class Utilities {
+    static def mvn(script, args) {
+        script.sh "${script.tool 'Maven'}/bin/mvn -s ${script.env.HOME}/jenkins.xml -o ${args}"
+    }
+}
+
+// Jenkinsfile:
+@Library('utils') import static org.foo.Utilities.*
+node {
+    mvn this, 'clean package'
+}</code></pre>
+
+<div class="warning">Classes storing state <strong>must</strong> implement <code>Serializable</code> for Pipeline suspension/resumption (CPS).</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="lib-resources">
+<h2>Library Resources</h2>
+<p>Load non-Groovy files from the <code>resources/</code> directory of an external library.</p>
+
+<pre><code>def template = libraryResource 'com/mycorp/pipeline/somelib/request.json'
+writeFile file: 'request.json', text: template</code></pre>
+
+<p>Files load as strings. Use unique package structures to avoid conflicts between libraries.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="lib-writing">
+<h2>Writing Libraries — Tips</h2>
+<ul>
+<li><code>vars/*.groovy</code> files get CPS-transformed like Pipeline scripts</li>
+<li>Use <code>@NonCPS</code> annotation for methods that should not be CPS-transformed (e.g. data processing)</li>
+<li>Avoid <code>@Grab</code> for third-party JARs — prefer standalone executables called via <code>sh</code>/<code>bat</code></li>
+<li>Use <strong>Replay</strong> to test library changes on untrusted libraries before committing</li>
+<li>Global Variable Reference is populated only after a successful pipeline run using the library</li>
+<li>Declarative Pipelines can be defined in <code>vars/*.groovy</code> <code>call</code> methods (since Declarative 1.2)</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="string-interpolation">
+<h2>String Interpolation</h2>
+<p>Groovy single quotes prevent interpolation; double quotes enable it.</p>
+
+<pre><code>def name = 'World'
+echo 'Hello ${name}'    // Output: Hello ${name}  (literal)
+echo "Hello ${name}"    // Output: Hello World     (interpolated)</code></pre>
+
+<div class="danger">
+<strong>NEVER interpolate secrets in shell commands!</strong>
+<pre><code>// BAD — secret exposed in process arguments
+sh "curl -H 'Authorization: Bearer ${API_TOKEN}' https://api.com"
+
+// GOOD — shell expands the env var, not Groovy
+sh 'curl -H "Authorization: Bearer ${API_TOKEN}" https://api.com'</code></pre>
+</div>
+
+<div class="danger">
+<strong>Injection risk:</strong> User-controlled parameters in double-quoted shell commands can execute arbitrary code.
+<pre><code>// VULNERABLE — user can inject: hello; rm -rf /
+sh "echo ${params.USER_INPUT}"
+
+// SAFE — single quotes prevent Groovy interpolation
+sh 'echo ${USER_INPUT}'</code></pre>
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="security">
+<h2>Security Best Practices</h2>
+<ul>
+<li>Use <strong>single quotes</strong> in <code>sh</code>/<code>bat</code> steps when referencing credentials</li>
+<li>Place <code>withCredentials</code> outside <code>dir()</code> blocks for file credentials</li>
+<li>Never expose secrets via <code>echo</code> — they're masked but can be captured</li>
+<li>Untrusted pipelines should never access trusted credentials</li>
+<li>Credential variables are scoped only within their <code>withCredentials</code> block</li>
+<li>On Windows, <code>bat 'echo %VAR%'</code> is safer than <code>bat "echo ${VAR}"</code></li>
+<li>Special characters in credentials (<code>%</code>, <code>&amp;</code>, etc.) can be mangled by interpolation</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="env-vars">
+<h2>Environment Variables</h2>
+<p>Built-in variables accessible via <code>env.NAME</code> or <code>${env.NAME}</code> in strings.</p>
+
+<table class="param-table">
+<tr><th>Variable</th><th>Description</th></tr>
+<tr><td>BUILD_ID</td><td>Current build ID</td></tr>
+<tr><td>BUILD_NUMBER</td><td>Sequential build number (e.g. "153")</td></tr>
+<tr><td>BUILD_TAG</td><td>jenkins-${JOB_NAME}-${BUILD_NUMBER}</td></tr>
+<tr><td>BUILD_URL</td><td>URL to build results</td></tr>
+<tr><td>EXECUTOR_NUMBER</td><td>Unique executor ID on this node</td></tr>
+<tr><td>JAVA_HOME</td><td>JDK path (when configured via tools)</td></tr>
+<tr><td>JENKINS_URL</td><td>Full Jenkins URL</td></tr>
+<tr><td>JOB_NAME</td><td>Full project name (folder/name)</td></tr>
+<tr><td>JOB_BASE_NAME</td><td>Short project name (no folder)</td></tr>
+<tr><td>NODE_NAME</td><td>Agent name ('built-in' for controller)</td></tr>
+<tr><td>WORKSPACE</td><td>Absolute workspace path on the agent</td></tr>
+<tr><td>WORKSPACE_TMP</td><td>Temporary directory near workspace</td></tr>
+<tr><td>BRANCH_NAME</td><td>Branch name (multibranch pipelines)</td></tr>
+<tr><td>CHANGE_ID</td><td>PR/MR number (multibranch)</td></tr>
+<tr><td>TAG_NAME</td><td>Tag name (if building a tag)</td></tr>
+</table>
+
+<div class="danger"><strong>Never use <code>System.getenv()</code></strong> — this returns the Jenkins <em>controller's</em> environment, not the agent's. Always use <code>env.NAME</code> or shell commands.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="failure-handling">
+<h2>Failure Handling</h2>
+
+<h4>Declarative — post section</h4>
+<pre><code>post {
+    always  { junit '**/target/*.xml' }
+    failure { mail to: 'team@example.com', subject: 'Build Failed', body: '...' }
+    success { echo 'All good!' }
+    fixed   { slackSend color: 'good', message: 'Build is back to normal' }
+}</code></pre>
+
+<h4>Scripted — try/catch/finally</h4>
+<pre><code>node {
+    try {
+        stage('Build') { sh 'make' }
+        stage('Test')  { sh 'make test' }
+    } catch (e) {
+        currentBuild.result = 'FAILURE'
+        mail to: 'team@example.com', subject: 'Build Failed', body: e.toString()
+        throw e
+    } finally {
+        stage('Cleanup') { deleteDir() }
+    }
+}</code></pre>
+
+<h4>Non-fatal errors</h4>
+<pre><code>// Continue pipeline, mark as unstable
+catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+    sh 'make optional-check'
+}
+
+// Or set manually
+currentBuild.result = 'UNSTABLE'</code></pre>
+</section>
+
+<!-- ============================================================ -->
+<section id="multi-agent">
+<h2>Multiple Agents</h2>
+<p>Use <code>agent none</code> at pipeline level, then specify agents per stage. Use <code>stash</code>/<code>unstash</code> to share files across agents.</p>
+
+<pre><code>pipeline {
+    agent none
+    stages {
+        stage('Build') {
+            agent { label 'linux' }
+            steps {
+                checkout scm
+                sh 'make'
+                stash includes: '**/target/*.jar', name: 'app'
+            }
+        }
+        stage('Test on Linux') {
+            agent { label 'linux' }
+            steps {
+                unstash 'app'
+                sh 'make check'
+            }
+        }
+        stage('Test on Windows') {
+            agent { label 'windows' }
+            steps {
+                unstash 'app'
+                bat 'make check'
+            }
+        }
+    }
+}</code></pre>
+</section>
+
+</div><!-- /content -->
+</div><!-- /layout -->
+
+<script>
+(function() {
+  const searchInput = document.getElementById('search-input');
+  const matchCount = document.getElementById('match-count');
+  const content = document.getElementById('content');
+  const sections = content.querySelectorAll('section');
+  const tocLinks = document.querySelectorAll('#toc a');
+  let debounceTimer;
+
+  // Keyboard shortcut
+  document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    }
+    if (e.key === 'Escape') {
+      searchInput.value = '';
+      doSearch('');
+      searchInput.blur();
+    }
+  });
+
+  searchInput.addEventListener('input', function() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => doSearch(this.value), 150);
+  });
+
+  function doSearch(query) {
+    // Clear previous highlights
+    content.querySelectorAll('mark').forEach(m => {
+      m.replaceWith(m.textContent);
+    });
+    content.normalize();
+
+    if (!query.trim()) {
+      sections.forEach(s => s.classList.remove('hidden'));
+      tocLinks.forEach(l => l.classList.remove('hidden'));
+      matchCount.textContent = '';
+      return;
+    }
+
+    const q = query.toLowerCase();
+    let totalMatches = 0;
+    let visibleSections = 0;
+
+    sections.forEach((section, idx) => {
+      const text = section.textContent.toLowerCase();
+      if (text.includes(q)) {
+        section.classList.remove('hidden');
+        visibleSections++;
+        totalMatches += highlightText(section, query);
+      } else {
+        section.classList.add('hidden');
+      }
+    });
+
+    // Update TOC visibility
+    tocLinks.forEach(link => {
+      const href = link.getAttribute('href');
+      if (!href) return;
+      const target = document.querySelector(href);
+      if (target && target.classList.contains('hidden')) {
+        link.classList.add('hidden');
+      } else {
+        link.classList.remove('hidden');
+      }
+    });
+
+    matchCount.textContent = totalMatches > 0
+      ? `${totalMatches} match${totalMatches !== 1 ? 'es' : ''} in ${visibleSections} section${visibleSections !== 1 ? 's' : ''}`
+      : 'No matches';
+  }
+
+  function highlightText(root, query) {
+    let count = 0;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+    const nodesToProcess = [];
+
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      if (node.parentNode.tagName === 'SCRIPT' || node.parentNode.tagName === 'STYLE') continue;
+      if (node.nodeValue.toLowerCase().includes(query.toLowerCase())) {
+        nodesToProcess.push(node);
+      }
+    }
+
+    nodesToProcess.forEach(node => {
+      const text = node.nodeValue;
+      const lowerText = text.toLowerCase();
+      const lowerQuery = query.toLowerCase();
+      const parts = [];
+      let lastIdx = 0;
+
+      let idx = lowerText.indexOf(lowerQuery);
+      while (idx !== -1) {
+        if (idx > lastIdx) parts.push(document.createTextNode(text.substring(lastIdx, idx)));
+        const mark = document.createElement('mark');
+        mark.textContent = text.substring(idx, idx + query.length);
+        parts.push(mark);
+        count++;
+        lastIdx = idx + query.length;
+        idx = lowerText.indexOf(lowerQuery, lastIdx);
+      }
+      if (lastIdx < text.length) parts.push(document.createTextNode(text.substring(lastIdx)));
+
+      if (parts.length > 0) {
+        const frag = document.createDocumentFragment();
+        parts.forEach(p => frag.appendChild(p));
+        node.parentNode.replaceChild(frag, node);
+      }
+    });
+
+    return count;
+  }
+
+  // Active TOC tracking on scroll
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const id = entry.target.id;
+        tocLinks.forEach(l => l.classList.remove('active'));
+        const activeLink = document.querySelector(`#toc a[href="#${id}"]`);
+        if (activeLink) activeLink.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-60px 0px -70% 0px' });
+
+  sections.forEach(s => observer.observe(s));
+})();
+</script>
+
+</body>
+</html>

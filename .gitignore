@@ -1,0 +1,24 @@
+# Plastic SCM
+.plastic/
+
+# Docker
+docker/
+
+# IDE
+.idea/
+.vs/
+*.suo
+*.user
+*.swp
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Debug/dump files
+scripts/amazon_api_dump.txt
+scripts/fastlane/report.xml
+
+# Claude Code
+.claude/projects/

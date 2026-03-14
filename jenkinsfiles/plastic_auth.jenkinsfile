@@ -1,0 +1,106 @@
+/**
+ * Plastic SCM Auth — Configure Plastic SCM credentials on all build agents
+ *
+ * Standalone pipeline (no shared library). Discovers all online nodes with
+ * 'Windows' and 'OSX' labels, then creates/verifies the Plastic SCM SSO
+ * profile on each in parallel.
+ *
+ * Required Jenkins Credentials:
+ *   plastic-token  - Secret text for Plastic SCM SSO token
+ */
+
+@NonCPS
+def getOnlineNodes(String label) {
+    def jenkins = jenkins.model.Jenkins.get()
+    def labelObj = jenkins.getLabel(label)
+    if (labelObj == null) return []
+
+    def names = []
+    for (def n : labelObj.getNodes()) {
+        def computer = n.toComputer()
+        if (computer != null && computer.isOnline()) {
+            names << n.displayName
+        }
+    }
+    return names
+}
+
+def plasticLogin() {
+    if (isUnix()) {
+        withCredentials([string(credentialsId: 'plastic-token', variable: 'PLASTIC_TOKEN')]) {
+            sh '''
+                cm version || exit 1
+                if ! cm profile list | grep -q "oddgames_external@cloud"; then
+                    echo "Installing Plastic SCM profile for oddgames_external@cloud..."
+                    cm profile create \
+                        --server=oddgames_external@cloud \
+                        --username=builds@oddgames.com.au \
+                        --token="$PLASTIC_TOKEN" \
+                        --workingmode=SSOWorkingMode
+                fi
+                cm whoami || exit 1
+                echo "[OK] PlasticSCM authenticated"
+            '''
+        }
+    } else {
+        withCredentials([string(credentialsId: 'plastic-token', variable: 'PLASTIC_TOKEN')]) {
+            bat '''@echo off
+                cm profile list | findstr /C:"oddgames_external@cloud" >nul 2>&1 || (
+                    echo Installing Plastic SCM profile for oddgames_external@cloud... >&2
+                    cm profile create --server=oddgames_external@cloud --username=builds@oddgames.com.au --token="%PLASTIC_TOKEN%" --workingmode=SSOWorkingMode
+                )
+                cm whoami || exit /b 1
+                echo [OK] PlasticSCM authenticated >&2'''
+        }
+    }
+}
+
+pipeline {
+    agent none
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Authorize Nodes') {
+            steps {
+                script {
+                    def windowsNodes = getOnlineNodes('Windows')
+                    def osxNodes = getOnlineNodes('OSX')
+
+                    echo "[INFO] Windows nodes online: ${windowsNodes.join(', ') ?: 'none'}"
+                    echo "[INFO] macOS nodes online: ${osxNodes.join(', ') ?: 'none'}"
+
+                    if (!windowsNodes && !osxNodes) {
+                        error "No online nodes found with 'Windows' or 'OSX' labels"
+                    }
+
+                    def branches = [:]
+
+                    for (def nodeName : (windowsNodes + osxNodes)) {
+                        def name = nodeName
+                        branches["${name}"] = {
+                            node(name) {
+                                stage("${name}: Plastic SCM") {
+                                    plasticLogin()
+                                }
+                            }
+                        }
+                    }
+
+                    parallel branches
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "[OK] All nodes authorized for Plastic SCM"
+        }
+        failure {
+            echo "[FAILED] Some nodes could not be authorized - check the logs above"
+        }
+    }
+}

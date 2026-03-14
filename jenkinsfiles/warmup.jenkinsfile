@@ -1,0 +1,148 @@
+@Library('tool_jenkins_build_system@main') _
+
+/**
+ * Nightly Warmup Pipeline
+ *
+ * Triggers all build jobs with WARMUP=true on every node to warm Unity Library/IL2CPP
+ * caches overnight, so morning builds are fast. Skips uploads and Slack notifications.
+ *
+ * Required Jenkins Environment Variables (set in job config):
+ *   WARMUP_JOBS  - Comma-separated list of job names to trigger
+ *                  e.g., "TGW-Steam,TGW-GooglePlay,TGW-Amazon,TGW-Apple,TGW-Switch"
+ *   WARMUP_NODES - Comma-separated list of node names to run on
+ *                  e.g., "BUILD1,BUILD3,BUILD8"
+ *
+ * Required Jenkins Credentials:
+ *   warmup-password - Secret text credential. Must be provided as PASSWORD parameter
+ *                     for manual runs. Cron trigger supplies it automatically.
+ *
+ * Setup:
+ *   1. Create a new Pipeline job pointing to this jenkinsfile
+ *   2. Set WARMUP_JOBS to the comma-separated list of your build job names
+ *   3. Set WARMUP_NODES to the comma-separated list of your build agent names
+ *   4. The cron trigger runs weekdays at ~3am (configure in Jenkins or override below)
+ *   5. Each triggered job must have the WARMUP and NODE parameters (added to all build jenkinsfiles)
+ */
+
+pipeline {
+    agent none
+
+    parameters {
+        choice(name: 'BUILD_TYPE', choices: ['Release', 'Debug'], description: 'Build type to warm up (Release recommended — warms IL2CPP release cache)')
+        password(name: 'PASSWORD', defaultValue: '', description: 'Required password to run warmup (prevents accidental triggers)')
+    }
+
+    triggers {
+        cron('H 3 * * 1-5')  // Weekdays at ~3am
+    }
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Warmup') {
+            steps {
+                script {
+                    // Verify password — cron triggers bypass (no user to enter it),
+                    // manual runs must provide it
+                    def isCron = currentBuild.getBuildCauses('hudson.triggers.TimerTrigger$TimerTriggerCause')
+                    if (!isCron) {
+                        withCredentials([string(credentialsId: 'warmup-password', variable: 'EXPECTED_PASSWORD')]) {
+                            if (params.PASSWORD != env.EXPECTED_PASSWORD) {
+                                error "Invalid password. Warmup requires the correct password to run."
+                            }
+                        }
+                    }
+
+                    def allJobs = env.WARMUP_JOBS?.split(',')*.trim()?.findAll { it }
+                    if (!allJobs) {
+                        error "No jobs configured. Set WARMUP_JOBS environment variable (comma-separated job names)"
+                    }
+
+                    // Filter out archived (disabled) jobs and jobs not in the main project folder
+                    def jenkins = jenkins.model.Jenkins.get()
+                    def parentFolder = jenkins.getItemByFullName(env.JOB_NAME)?.parent
+                    def jobs = allJobs.findAll { jobName ->
+                        def item = jenkins.getItemByFullName(jobName)
+                        if (!item) {
+                            echo "[Warmup] Skipping '${jobName}' — job not found"
+                            return false
+                        }
+                        if (item.isDisabled()) {
+                            echo "[Warmup] Skipping '${jobName}' — job is disabled/archived"
+                            return false
+                        }
+                        if (parentFolder && item.parent != parentFolder) {
+                            echo "[Warmup] Skipping '${jobName}' — not in project folder '${parentFolder.fullName}'"
+                            return false
+                        }
+                        return true
+                    }
+                    if (!jobs) {
+                        echo "[Warmup] All configured jobs are disabled or not in the project folder — nothing to do"
+                        return
+                    }
+
+                    def nodes = env.WARMUP_NODES?.split(',')*.trim()?.findAll { it }
+                    if (!nodes) {
+                        error "No nodes configured. Set WARMUP_NODES environment variable (comma-separated node names)"
+                    }
+
+                    echo "[Warmup] Triggering ${jobs.size()} jobs x ${nodes.size()} nodes = ${jobs.size() * nodes.size()} builds"
+                    echo "[Warmup] Jobs: ${jobs.join(', ')}"
+                    echo "[Warmup] Nodes: ${nodes.join(', ')}"
+                    echo "[Warmup] Build type: ${params.BUILD_TYPE}"
+
+                    // Run one node at a time to avoid overloading agents,
+                    // but all jobs for that node in parallel
+                    def results = [:]
+
+                    for (def nodeName : nodes) {
+                        echo "\n[Warmup] ===== Node: ${nodeName} ====="
+
+                        def parallelBuilds = [:]
+                        def currentNode = nodeName  // capture for closure
+
+                        jobs.each { jobName ->
+                            def key = "${jobName} @ ${currentNode}"
+                            parallelBuilds[key] = {
+                                echo "[Warmup] Starting: ${key}"
+                                def result = build job: jobName, parameters: [
+                                    booleanParam(name: 'WARMUP', value: true),
+                                    string(name: 'BUILD_TYPE', value: params.BUILD_TYPE),
+                                    string(name: 'BRANCH', value: '/main'),
+                                    string(name: 'NODE', value: currentNode),
+                                    string(name: 'CLEAN_CACHE', value: 'Clear Library')
+                                ], wait: true, propagate: false
+
+                                results[key] = result.result
+                                echo "[Warmup] ${key}: ${result.result}"
+                            }
+                        }
+
+                        parallel parallelBuilds
+                    }
+
+                    // Summary
+                    echo "\n[Warmup] ===== Summary ====="
+                    def failures = []
+                    results.each { key, result ->
+                        def icon = result == 'SUCCESS' ? '[OK]' : '[FAIL]'
+                        echo "${icon} ${key}: ${result}"
+                        if (result != 'SUCCESS') {
+                            failures << "${key} (${result})"
+                        }
+                    }
+
+                    if (failures) {
+                        echo "\n[Warmup] ${failures.size()} build(s) failed: ${failures.join(', ')}"
+                        currentBuild.result = 'UNSTABLE'
+                    } else {
+                        echo "\n[Warmup] All ${results.size()} builds completed successfully"
+                    }
+                }
+            }
+        }
+    }
+}

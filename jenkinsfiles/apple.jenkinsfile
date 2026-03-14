@@ -1,0 +1,680 @@
+@Library('tool_jenkins_build_system@main') _
+
+/**
+ * Apple App Store iOS Build Pipeline
+ *
+ * Required Jenkins Environment Variables (set in job config):
+ *   PLASTIC_REPSPEC        - PlasticSCM repository spec for game project (e.g., "UnityProj_TGW@cloud")
+ *   UNITY_PROJECT_NAME     - Unity project folder name (e.g., "UnityProj_TGW")
+ *   BUNDLE_IDENTIFIER      - iOS bundle identifier (e.g., "au.com.oddgames.trucksoffroad")
+ *   APP_NAME               - App name for build artifacts (e.g., "trucksoffroad")
+ *   APP_ICON               - URL to app icon for notifications
+ *   // ENTITLEMENTS_FILENAME  - Entitlements file name (e.g., "App.entitlements") - optional, default: App.entitlements
+ *   APPLE_TEAM_ID          - Apple Developer Team ID (e.g., "52TRASNQ85")
+ *   RCLONE_REMOTE          - rclone remote path (e.g., "drive:Builds")
+ *   XCODE_VERSION          - Xcode major version to use (e.g., "16"). Selects /Applications/Xcode_16.app. Auto-installs via xcodes if missing. Optional - uses system default if not set.
+ *
+ * Required Jenkins Credentials:
+ *   unity-credentials      - Username/password for Unity license
+ *   apple-keychain-pass    - Secret text for macOS keychain password
+ *   apple-api-key          - File credential containing App Store Connect API key JSON
+ *   rclone                 - File credential containing rclone.conf
+ *   google-play-json       - File credential for Firebase Crashlytics symbol upload (optional, requires Firebase Crashlytics Admin role)
+ *   gemini-api-key         - Secret text for AI failure analysis (optional)
+ *   slack-token            - Secret text for Slack build notifications (optional)
+ *
+ * Optional Jenkins Environment Variables:
+ *   UPLOAD_CRASHLYTICS_SYMBOLS - Set to 'true' to upload dSYM files to Firebase Crashlytics
+ *   GOOGLE_SERVICES_CREDENTIAL_ID - Jenkins credential ID containing GoogleService-Info.plist (optional, auto-detected from project)
+ */
+
+pipeline {
+    agent {
+        node {
+            label buildUtils.pickNode(params.NODE, 'OSX')
+        }
+    }
+
+    parameters {
+        choice(name: 'BUILD_TYPE', choices: ['Debug', 'Release'], description: 'Build type to create')
+        persistentString(name: 'BRANCH', defaultValue: '/main', description: 'Branch, changeset, or full selector (e.g. /main, 9613, or 9613@branch@repo@server)')
+        string(name: 'NODE', defaultValue: '', description: 'Override build agent (e.g. MACMINI1). Leave blank for default.')
+        extendedChoice(
+            name: 'CLEAN_CACHE',
+            type: 'PT_CHECKBOX',
+            value: 'ShaderCache,BuildCache,ArtifactDB,Temp,ScriptAssemblies,PackageCache,Bee,IL2CPP,Addressables,DerivedData,Verify Workspace,Clear Library,Clear Workspace,Force Preflight',
+            defaultValue: '',
+            multiSelectDelimiter: ',',
+            quoteValue: false,
+            saveJSONParameterToFile: false,
+            visibleItemCount: 14,
+            description: 'Clean Unity cache dirs before build (select multiple). Verify Workspace=Force re-check all tracked files against server. Clear Library=Delete entire Library folder. Clear Workspace=Wipe entire Jenkins workspace and start from scratch. Force Preflight=Re-run all preflight checks even if they passed recently'
+        )
+        booleanParam(name: 'FORCE_UPLOAD', defaultValue: false, description: 'Upload to store (auto for Release on /main)')
+        booleanParam(name: 'WARMUP', defaultValue: false, description: 'Cache-warming build: runs full build but skips uploads and notifications')
+    }
+
+    environment {
+        // Build configuration
+        BUILD_TYPE = "${params.BUILD_TYPE}"
+        PLATFORM = "iOS"
+
+        // Paths (derived from UNITY_PROJECT_NAME)
+        UNITY_PROJECT = "${WORKSPACE}/plastic/${UNITY_PROJECT_NAME}"
+        BUILD_PATH = "${WORKSPACE}/build"
+        ARTIFACT_PATH = "${WORKSPACE}/artifacts"
+        XCODE_BASE_PATH = "${WORKSPACE}/xcode"
+
+        // Environment
+        LC_ALL = "en_US.UTF-8"
+        LANG = "en_US.UTF-8"
+        PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        FASTLANE_ITUNES_TRANSPORTER_USE_SHELL_SCRIPT = "1"
+        FASTLANE_ITUNES_TRANSPORTER_PATH = "/usr/local/itms"
+    }
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Validate') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Validate'
+                    buildUtils.init(buildType: params.BUILD_TYPE, branch: params.BRANCH)  // Initialize early for post handlers
+                    if (params.WARMUP) {
+                        currentBuild.displayName = "#${env.BUILD_NUMBER} [Warmup] ${params.BUILD_TYPE}"
+                    }
+                    buildUtils.purgeWorkspace(params.CLEAN_CACHE)  // Wipe workspace before checkout if "Clear Workspace" selected
+                    def required = ['PLASTIC_REPSPEC', 'UNITY_PROJECT_NAME', 'BUNDLE_IDENTIFIER', 'APP_NAME', 'APP_ICON', 'APPLE_TEAM_ID', 'RCLONE_REMOTE']
+                    def missing = required.findAll { !env[it]?.trim() }
+                    if (missing) error "Missing env vars: ${missing.join(', ')}\nSet in: Job > Configure > Environment Variables"
+                    echo "[Config] Project=${env.UNITY_PROJECT_NAME} Bundle=${env.BUNDLE_IDENTIFIER} AppName=${env.APP_NAME}"
+                }
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Checkout'
+
+                    // Ensure Plastic SCM profile is configured before any cm commands
+                    buildUtils.preflightPlasticSCM()
+
+                    // Parse selector: /main or 9613
+                    def sel = buildUtils.parseSelector(params.BRANCH)
+
+                    echo "[Checkout] Input: '${params.BRANCH}' -> changeset: ${sel.changeset}, branch: ${sel.branch}"
+
+                    buildUtils.cleanPlasticWorkspace(params.CLEAN_CACHE)
+
+                    def scmVars = buildUtils.plasticCheckout(
+                        branch: sel.branch,
+                        changeset: sel.changeset
+                    )
+
+                    env.PLASTICSCM_CHANGESET_ID = scmVars.PLASTICSCM_CHANGESET_ID
+                    env.PLASTICSCM_BRANCH = scmVars.PLASTICSCM_BRANCH
+                    env.PLASTICSCM_AUTHOR = scmVars.PLASTICSCM_AUTHOR
+                    env.CHANGESET_ID = scmVars.PLASTICSCM_CHANGESET_ID
+                    env.BRANCH = scmVars.PLASTICSCM_BRANCH
+                    env.PLASTIC_CHANGESET_GUID = scmVars.PLASTICSCM_CHANGESET_GUID
+                }
+            }
+        }
+
+        stage('Startup') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
+                    script {
+                        env.CURRENT_STAGE = 'Startup'
+                        buildUtils.copyPipelineScripts()
+                        buildUtils.startup(params.BUILD_TYPE, env.BRANCH)
+                        buildUtils.capTextures()
+                    }
+                    sh 'printenv | sort'
+                }
+            }
+        }
+
+        stage('Extract Version') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Extract Version'
+                    buildUtils.extractUnityVersion(env.UNITY_PROJECT)
+                }
+            }
+        }
+
+        stage('Unity') {
+            when {
+                expression {
+                    return !buildUtils.shouldSkipPreflight() || params.CLEAN_CACHE?.contains('Force Preflight')
+                }
+            }
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Preflight: Unity'
+                    buildUtils.validateUnityInstallation()
+                }
+            }
+        }
+
+        stage('Preflight Checks') {
+            when {
+                expression {
+                    return !buildUtils.shouldSkipPreflight() || params.CLEAN_CACHE?.contains('Force Preflight')
+                }
+            }
+            parallel {
+                stage('Network') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Network'
+                            buildUtils.preflightNetwork()
+                        }
+                    }
+                }
+
+                stage('Jenkins Permissions') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Jenkins Permissions'
+                            buildUtils.preflightJenkinsPermissions()
+                        }
+                    }
+                }
+
+                stage('rclone') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: rclone'
+                            buildUtils.preflightRclone()
+                        }
+                    }
+                }
+
+                stage('PlasticSCM') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: PlasticSCM'
+                            buildUtils.preflightPlasticSCM()
+                        }
+                    }
+                }
+
+                stage('Keychain') {
+                    steps {
+                        script { env.CURRENT_STAGE = 'Preflight: Keychain' }
+                        withCredentials([string(credentialsId: 'apple-keychain-pass', variable: 'KEYCHAIN_PASSWORD')]) {
+                            script {
+                                buildUtils.preflightKeychain(env.KEYCHAIN_PASSWORD)
+                            }
+                        }
+                    }
+                }
+
+                stage('Fastlane') {
+                    when {
+                        expression { params.BUILD_TYPE != 'Debug' }
+                    }
+                    steps {
+                        script { env.CURRENT_STAGE = 'Preflight: Fastlane' }
+                        script { buildUtils.preflightFastlane() }
+                        withCredentials([file(credentialsId: 'apple-api-key', variable: 'APPLE_API_KEY_JSON')]) {
+                            script {
+                                sh '''
+                                    if [ ! -f "$APPLE_API_KEY_JSON" ]; then
+                                        echo "[ERROR] API key file not found"
+                                        exit 1
+                                    fi
+                                    echo "Testing App Store Connect authentication..."
+                                    fastlane run app_store_build_number api_key_path:"$APPLE_API_KEY_JSON" app_identifier:"${BUNDLE_IDENTIFIER}" platform:"ios"
+                                    echo Fastlane ready
+                                '''
+                            }
+                        }
+                    }
+                }
+
+                stage('UnityDataTool') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: UnityDataTool'
+                            buildUtils.preflightUnityDataTool()
+                        }
+                    }
+                }
+
+                stage('CocoaPods') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: CocoaPods'
+                            buildUtils.preflightCocoaPods()
+                        }
+                    }
+                }
+
+                stage('Xcode') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Xcode'
+                            buildUtils.preflightXcode()
+                        }
+                    }
+                }
+
+                stage('Python') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Python'
+                            buildUtils.preflightPython()
+                        }
+                    }
+                }
+
+                stage('Ruby') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Ruby'
+                            buildUtils.preflightRuby()
+                        }
+                    }
+                }
+
+                stage('Firebase CLI') {
+                    when {
+                        expression { env.UPLOAD_CRASHLYTICS_SYMBOLS == 'true' }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Firebase CLI'
+                            buildUtils.preflightFirebaseCLI()
+                        }
+                    }
+                }
+            }
+            post {
+                success {
+                    script {
+                        buildUtils.markPreflightPassed()
+                    }
+                }
+            }
+        }
+
+        stage('Unity License') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Unity License'
+                    buildUtils.preflightUnityLicense()
+                }
+            }
+        }
+
+        stage('Calculate Build Version') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Calculate Build Version'
+                    def branchSuffix = "-${env.BRANCH.replaceAll('[/\\\\]', '')}"
+                    env.VERSION = "${env.BASE_VERSION}.${env.CHANGESET_ID}.${env.BUILD_NUMBER}${branchSuffix}"
+                    echo "Full Version: ${env.VERSION}"
+                }
+            }
+        }
+
+        stage('Cache Integrity') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Cache Integrity'
+                    buildUtils.checkCacheValidity(env.UNITY_PROJECT)
+                }
+            }
+        }
+
+        stage('Clean Unity Cache') {
+            when {
+                expression { params.CLEAN_CACHE }
+            }
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Clean Unity Cache'
+                    buildUtils.cleanUnityCache(env.UNITY_PROJECT, params.CLEAN_CACHE)
+                }
+            }
+        }
+
+        stage('Unity Build') {
+            stages {
+                stage('Prepare') {
+                    steps {
+                        script { env.CURRENT_STAGE = 'Prepare' }
+                        sh """
+                            rm -rf "${env.ARTIFACT_PATH}"
+                            mkdir -p "${env.ARTIFACT_PATH}"
+                            rm -rf "${env.XCODE_BASE_PATH}"
+                            mkdir -p "${env.XCODE_BASE_PATH}"
+                        """
+                        withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
+                            script {
+                                buildUtils.runUnityCommand(
+                                    unityProjectPath: env.UNITY_PROJECT,
+                                    platform: env.PLATFORM,
+                                    executeMethod: "ODDFramework.PipelineApple.Prepare${params.BUILD_TYPE}",
+                                    quit: true
+                                )
+                            }
+                        }
+                    }
+                }
+
+                stage('Build') {
+                    steps {
+                        script { env.CURRENT_STAGE = 'Build' }
+                        withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
+                            script {
+                                buildUtils.runUnityCommand(
+                                    unityProjectPath: env.UNITY_PROJECT,
+                                    platform: env.PLATFORM,
+                                    executeMethod: "ODDFramework.PipelineApple.${params.BUILD_TYPE}"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Xcode Build') {
+            stages {
+                stage('CocoaPods Install') {
+                    steps {
+                        script { env.CURRENT_STAGE = 'CocoaPods Install' }
+                        script { buildUtils.runCocoaPods(env.XCODE_BASE_PATH) }
+                    }
+                }
+
+                stage('Archive') {
+                    steps {
+                        script { env.CURRENT_STAGE = 'Archive' }
+                        withCredentials([string(credentialsId: 'apple-keychain-pass', variable: 'KEYCHAIN_PASSWORD')]) {
+                            script { buildUtils.unlockKeychain(env.KEYCHAIN_PASSWORD) }
+                            script {
+                                buildUtils.archiveXcodeProject(
+                                    xcodePath: env.XCODE_BASE_PATH,
+                                    archivePath: "${env.XCODE_BASE_PATH}/output.xcarchive"
+                                )
+                            }
+                        }
+                    }
+                }
+
+                stage('Export IPAs') {
+                    failFast false
+                    parallel {
+                        stage('Export Ad Hoc IPA') {
+                            steps {
+                                script { env.CURRENT_STAGE = 'Export Ad Hoc IPA' }
+                                withCredentials([string(credentialsId: 'apple-keychain-pass', variable: 'KEYCHAIN_PASSWORD')]) {
+                                    script {
+                                        buildUtils.unlockKeychain(env.KEYCHAIN_PASSWORD)
+                                        buildUtils.generateExportOptionsPlist(
+                                            outputPath: "${env.XCODE_BASE_PATH}/exportOptions_adhoc.plist",
+                                            method: 'development'
+                                        )
+                                        buildUtils.exportXcodeArchive(
+                                            archivePath: "${env.XCODE_BASE_PATH}/output.xcarchive",
+                                            exportPath: "${env.XCODE_BASE_PATH}/ipa_adhoc",
+                                            exportOptionsPlist: "${env.XCODE_BASE_PATH}/exportOptions_adhoc.plist",
+                                            logPath: "${env.ARTIFACT_PATH}/xcodebuild_export_adhoc.log",
+                                            newName: "${env.APP_NAME}_${env.VERSION}_${params.BUILD_TYPE}_AdHoc.ipa"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        stage('Export App Store IPA') {
+                            when {
+                                expression { params.BUILD_TYPE != 'Debug' }
+                            }
+                            steps {
+                                script { env.CURRENT_STAGE = 'Export App Store IPA' }
+                                withCredentials([string(credentialsId: 'apple-keychain-pass', variable: 'KEYCHAIN_PASSWORD')]) {
+                                    script {
+                                        buildUtils.unlockKeychain(env.KEYCHAIN_PASSWORD)
+                                        buildUtils.generateExportOptionsPlist(
+                                            outputPath: "${env.XCODE_BASE_PATH}/exportOptions_appstore.plist",
+                                            method: 'app-store'
+                                        )
+                                        buildUtils.exportXcodeArchive(
+                                            archivePath: "${env.XCODE_BASE_PATH}/output.xcarchive",
+                                            exportPath: "${env.XCODE_BASE_PATH}/ipa_appstore",
+                                            exportOptionsPlist: "${env.XCODE_BASE_PATH}/exportOptions_appstore.plist",
+                                            logPath: "${env.ARTIFACT_PATH}/xcodebuild_export_appstore.log",
+                                            newName: "${env.APP_NAME}_${env.VERSION}_${params.BUILD_TYPE}_AppStore.ipa"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Log Build Outputs') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Log Build Outputs'
+                    buildUtils.logBuildOutputs("${env.XCODE_BASE_PATH}/ipa_adhoc")
+                    buildUtils.logBuildOutputs("${env.XCODE_BASE_PATH}/ipa_appstore")
+                }
+            }
+        }
+
+        stage('Upload Notification') {
+            when {
+                expression { !params.WARMUP }
+            }
+            steps {
+                script {
+                    def uploads = ['local', 'gdrive']
+                    if ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) uploads << 'store'
+                    buildUtils.sendUploadNotification(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID,
+                        uploads: uploads
+                    )
+                }
+            }
+        }
+
+        stage('Parallel Post-Build') {
+            failFast false
+            parallel {
+                stage('Local Share') {
+                    when {
+                        expression { !params.WARMUP }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Local Share'
+                            buildUtils.uploadToLocalShare(
+                                buildPath: "${env.XCODE_BASE_PATH}/ipa_adhoc",
+                                buildType: params.BUILD_TYPE
+                            )
+                        }
+                    }
+                }
+
+                stage('Unity Data Tool') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Unity Data Tool'
+                            buildUtils.runUnityDataTool()
+                        }
+                    }
+                }
+
+                stage('Google Drive Upload') {
+                    when {
+                        expression { !params.WARMUP }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Google Drive Upload'
+                        }
+                        withCredentials([file(credentialsId: 'rclone', variable: 'RCLONE_CONFIG')]) {
+                            script {
+                                buildUtils.uploadToGoogleDrive(
+                                    buildPath: "${env.XCODE_BASE_PATH}/ipa_adhoc",
+                                    destFolder: "${env.JOB_NAME}/${env.VERSION}",
+                                    buildType: params.BUILD_TYPE
+                                )
+                            }
+                        }
+                    }
+                }
+
+                stage('Crashlytics Symbols') {
+                    when {
+                        expression { !params.WARMUP && env.UPLOAD_CRASHLYTICS_SYMBOLS == 'true' && ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Crashlytics Symbols'
+                            buildUtils.uploadCrashlyticsSymbols(
+                                buildPath: env.XCODE_BASE_PATH
+                            )
+                        }
+                    }
+                }
+
+                stage('TestFlight Upload') {
+                    when {
+                        expression { !params.WARMUP && ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'TestFlight Upload'
+                        }
+                        withCredentials([file(credentialsId: 'apple-api-key', variable: 'APPLE_API_KEY_JSON')]) {
+                            script {
+                                try {
+                                    sh """
+                                        cd "${env.XCODE_BASE_PATH}/ipa_appstore"
+                                        IPA_FILE=\$(ls -1 *.ipa | head -1)
+                                        if [ -n "\$IPA_FILE" ]; then
+                                            echo "Uploading to TestFlight: \$IPA_FILE"
+                                            fastlane pilot upload --ipa "\$IPA_FILE" --api_key_path "\$APPLE_API_KEY_JSON" --skip_waiting_for_build_processing
+                                        else
+                                            echo "[ERROR] No IPA file found"
+                                            exit 1
+                                        fi
+                                    """
+                                    buildUtils.updateUploadStatus('store', 'done')
+                                } catch (Exception e) {
+                                    echo "[WARNING] TestFlight upload failed: ${e.message}"
+                                    buildUtils.updateUploadStatus('store', 'failed')
+                                    unstable(message: "TestFlight upload failed")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.handleBuildSuccess(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+        }
+        unstable {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.handleBuildUnstable(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+        }
+        failure {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.handleBuildFailure(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+        }
+        aborted {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.handleBuildAborted(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+        }
+        always {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.finalizeBuild(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+            script {
+                sh """
+                    [ ! -d "${env.XCODE_BASE_PATH}" ] && exit 0
+                    XCODE_ARTIFACTS="${env.ARTIFACT_PATH}/xcode_investigation"
+                    mkdir -p "\${XCODE_ARTIFACTS}/Unity-iPhone.xcodeproj" "\${XCODE_ARTIFACTS}/Unity-iPhone" "\${XCODE_ARTIFACTS}/xcarchive"
+                    cp "${env.XCODE_BASE_PATH}/Info.plist" "\${XCODE_ARTIFACTS}/" || true
+                    # cp "${env.XCODE_BASE_PATH}/Unity-iPhone/${env.ENTITLEMENTS_FILENAME}" "\${XCODE_ARTIFACTS}/Unity-iPhone/" || true
+                    cp "${env.XCODE_BASE_PATH}/Unity-iPhone.xcodeproj/project.pbxproj" "\${XCODE_ARTIFACTS}/Unity-iPhone.xcodeproj/" || true
+                    cp "${env.XCODE_BASE_PATH}/Podfile"* "\${XCODE_ARTIFACTS}/" || true
+                    cp "${env.XCODE_BASE_PATH}/exportOptions_"*.plist "\${XCODE_ARTIFACTS}/" || true
+                    cp "${env.XCODE_BASE_PATH}/output.xcarchive/Info.plist" "\${XCODE_ARTIFACTS}/xcarchive/" || true
+
+                    # Copy .log files from xcode build path
+                    find "${env.XCODE_BASE_PATH}" -maxdepth 1 -name "*.log" -type f | while IFS= read -r logfile; do
+                        cp "\$logfile" "\${XCODE_ARTIFACTS}/" && echo "[OK] Archived log: \$(basename \$logfile)"
+                    done
+                """
+            }
+            dir('artifacts') {
+                archiveArtifacts artifacts: "**/*", fingerprint: true, allowEmptyArchive: true
+            }
+            script {
+                buildUtils.cleanupAtWorkspaces()
+            }
+        }
+    }
+}

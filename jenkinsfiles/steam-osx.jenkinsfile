@@ -1,0 +1,469 @@
+@Library('tool_jenkins_build_system@main') _
+
+/**
+ * Steam macOS Build Pipeline
+ *
+ * Builds StandaloneOSX (.app bundle) and uploads to Steam via SteamCMD.
+ * Must run on a macOS agent - Unity cannot cross-compile macOS builds from Windows.
+ *
+ * Required Jenkins Environment Variables (set in job config):
+ *   PLASTIC_REPSPEC       - PlasticSCM repository spec for game project (e.g., "UnityProj_TGW@cloud")
+ *   UNITY_PROJECT_NAME    - Unity project folder name (e.g., "UnityProj_TGW")
+ *   APP_NAME              - App name for build artifacts (e.g., "trucksoffroad")
+ *   APP_ICON              - URL to app icon for notifications
+ *   STEAM_APP_ID          - Steam application ID (e.g., "2099810")
+ *   STEAM_DEPOT_ID        - Steam depot ID for macOS (e.g., "2099813")
+ *   RCLONE_REMOTE         - rclone remote path (e.g., "drive:Builds")
+ *
+ * Required Jenkins Credentials:
+ *   unity-credentials     - Username/password for Unity license
+ *   steam-credentials     - Username/password for Steam upload
+ *   rclone                - File credential containing rclone.conf
+ *   gemini-api-key        - Secret text for AI failure analysis (optional)
+ *   slack-token           - Secret text for Slack build notifications (optional)
+ */
+
+pipeline {
+    agent {
+        node {
+            label buildUtils.pickNode(params.NODE, 'OSX')
+        }
+    }
+
+    parameters {
+        choice(name: 'BUILD_TYPE', choices: ['Debug', 'Release'], description: 'Build type to create')
+        persistentString(name: 'BRANCH', defaultValue: '/main', description: 'Branch, changeset, or full selector (e.g. /main, 9613, or 9613@branch@repo@server)')
+        string(name: 'NODE', defaultValue: '', description: 'Override build agent (e.g. MACMINI1). Leave blank for default.')
+        extendedChoice(
+            name: 'CLEAN_CACHE',
+            type: 'PT_CHECKBOX',
+            value: 'ShaderCache,BuildCache,ArtifactDB,Temp,ScriptAssemblies,PackageCache,Bee,IL2CPP,Addressables,DerivedData,Verify Workspace,Clear Library,Clear Workspace,Force Preflight',
+            defaultValue: '',
+            multiSelectDelimiter: ',',
+            quoteValue: false,
+            saveJSONParameterToFile: false,
+            visibleItemCount: 14,
+            description: 'Clean Unity cache dirs before build (select multiple). Verify Workspace=Force re-check all tracked files against server. Clear Library=Delete entire Library folder. Clear Workspace=Wipe entire Jenkins workspace and start from scratch. Force Preflight=Re-run all preflight checks even if they passed recently'
+        )
+        booleanParam(name: 'FORCE_UPLOAD', defaultValue: true, description: 'Upload to store (auto for Release on /main)')
+        booleanParam(name: 'WARMUP', defaultValue: false, description: 'Cache-warming build: runs full build but skips uploads and notifications')
+    }
+
+    environment {
+        // Build configuration
+        PLATFORM = "StandaloneOSX"
+
+        // Paths (derived from UNITY_PROJECT_NAME)
+        UNITY_PROJECT = "${WORKSPACE}/plastic/${UNITY_PROJECT_NAME}"
+        BUILD_PATH = "${WORKSPACE}/build"
+        ARTIFACT_PATH = "${WORKSPACE}/artifacts"
+
+        // Environment
+        LC_ALL = "en_US.UTF-8"
+        LANG = "en_US.UTF-8"
+        PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    }
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Validate') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Validate'
+                    buildUtils.init(buildType: params.BUILD_TYPE, branch: params.BRANCH)
+                    if (params.WARMUP) {
+                        currentBuild.displayName = "#${env.BUILD_NUMBER} [Warmup] ${params.BUILD_TYPE}"
+                    }
+                    buildUtils.purgeWorkspace(params.CLEAN_CACHE)  // Wipe workspace before checkout if "Clear Workspace" selected
+                    def required = ['PLASTIC_REPSPEC', 'UNITY_PROJECT_NAME', 'APP_NAME', 'APP_ICON', 'STEAM_APP_ID', 'STEAM_DEPOT_ID', 'RCLONE_REMOTE']
+                    def missing = required.findAll { !env[it]?.trim() }
+                    if (missing) error "Missing env vars: ${missing.join(', ')}\nSet in: Job > Configure > Environment Variables"
+                    echo "[Config] Project=${env.UNITY_PROJECT_NAME} AppName=${env.APP_NAME} AppID=${env.STEAM_APP_ID} Platform=macOS"
+                }
+            }
+        }
+
+        stage('Steam Auth') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Steam Auth'
+                    buildUtils.preflightSteamCMD()
+                }
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Checkout'
+
+                    buildUtils.preflightPlasticSCM()
+
+                    def sel = buildUtils.parseSelector(params.BRANCH)
+
+                    echo "[Checkout] Input: '${params.BRANCH}' -> changeset: ${sel.changeset}, branch: ${sel.branch}"
+
+                    buildUtils.cleanPlasticWorkspace(params.CLEAN_CACHE)
+
+                    def scmVars = buildUtils.plasticCheckout(
+                        branch: sel.branch,
+                        changeset: sel.changeset
+                    )
+
+                    env.PLASTICSCM_CHANGESET_ID = scmVars.PLASTICSCM_CHANGESET_ID
+                    env.PLASTICSCM_BRANCH = scmVars.PLASTICSCM_BRANCH
+                    env.PLASTICSCM_AUTHOR = scmVars.PLASTICSCM_AUTHOR
+                    env.CHANGESET_ID = scmVars.PLASTICSCM_CHANGESET_ID
+                    env.BRANCH = scmVars.PLASTICSCM_BRANCH
+                    env.PLASTIC_CHANGESET_GUID = scmVars.PLASTICSCM_CHANGESET_GUID
+                }
+            }
+        }
+
+        stage('Startup') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
+                    script {
+                        env.CURRENT_STAGE = 'Startup'
+                        buildUtils.copyPipelineScripts()
+                        buildUtils.startup(params.BUILD_TYPE, env.BRANCH)
+                        buildUtils.capTextures()
+                    }
+                    sh 'env | sort'
+                }
+            }
+        }
+
+        stage('Extract Version') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Extract Version'
+                    buildUtils.extractUnityVersion(env.UNITY_PROJECT)
+                }
+            }
+        }
+
+        stage('Unity') {
+            when {
+                expression {
+                    return !buildUtils.shouldSkipPreflight() || params.CLEAN_CACHE?.contains('Force Preflight')
+                }
+            }
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Preflight: Unity'
+                    buildUtils.validateUnityInstallation()
+                }
+            }
+        }
+
+        stage('Preflight Checks') {
+            when {
+                expression {
+                    return !buildUtils.shouldSkipPreflight() || params.CLEAN_CACHE?.contains('Force Preflight')
+                }
+            }
+            parallel {
+                stage('Network') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Network'
+                            buildUtils.preflightNetwork()
+                        }
+                    }
+                }
+
+                stage('Jenkins Permissions') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Jenkins Permissions'
+                            buildUtils.preflightJenkinsPermissions()
+                        }
+                    }
+                }
+
+                stage('rclone') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: rclone'
+                            buildUtils.preflightRclone()
+                        }
+                    }
+                }
+
+                stage('PlasticSCM') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: PlasticSCM'
+                            buildUtils.preflightPlasticSCM()
+                        }
+                    }
+                }
+
+                stage('Steam Staging') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Steam Staging'
+                            buildUtils.preflightSteamStaging()
+                        }
+                    }
+                }
+
+                stage('UnityDataTool') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: UnityDataTool'
+                            buildUtils.preflightUnityDataTool()
+                        }
+                    }
+                }
+
+                stage('Python') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Python'
+                            buildUtils.preflightPython()
+                        }
+                    }
+                }
+
+                stage('Ruby') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Ruby'
+                            buildUtils.preflightRuby()
+                        }
+                    }
+                }
+            }
+            post {
+                success {
+                    script {
+                        buildUtils.markPreflightPassed()
+                    }
+                }
+            }
+        }
+
+        stage('Unity License') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Unity License'
+                    buildUtils.preflightUnityLicense()
+                }
+            }
+        }
+
+        stage('Setup') {
+            stages {
+                stage('Validate macOS Build Support') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Validate macOS Build Support'
+                            buildUtils.validateMacOSBuildSupport()
+                        }
+                    }
+                }
+
+                stage('Calculate Build Version') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Calculate Build Version'
+                            env.VERSION = "${env.BASE_VERSION}.${env.CHANGESET_ID}.${env.BUILD_NUMBER}"
+                            echo "[OK] Full Version: ${env.VERSION}"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Cache Integrity') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Cache Integrity'
+                    buildUtils.checkCacheValidity(env.UNITY_PROJECT)
+                }
+            }
+        }
+
+        stage('Clean Unity Cache') {
+            when {
+                expression { params.CLEAN_CACHE }
+            }
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Clean Unity Cache'
+                    buildUtils.cleanUnityCache(env.UNITY_PROJECT, params.CLEAN_CACHE)
+                }
+            }
+        }
+
+        stage('Unity Prepare') {
+            steps {
+                script { env.CURRENT_STAGE = 'Unity Prepare' }
+                withCredentials([
+                    usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
+                ]) {
+                    script {
+                        buildUtils.runUnityCommand(
+                            unityProjectPath: env.UNITY_PROJECT,
+                            platform: env.PLATFORM,
+                            executeMethod: "ODDFramework.PipelineSteamMac.Prepare${params.BUILD_TYPE}",
+                            quit: true,
+                            buildPath: env.BUILD_PATH,
+                            artifactPath: env.ARTIFACT_PATH
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Unity Build') {
+            steps {
+                script { env.CURRENT_STAGE = 'Unity Build' }
+                withCredentials([
+                    usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
+                ]) {
+                    script {
+                        buildUtils.runUnityCommand(
+                            unityProjectPath: env.UNITY_PROJECT,
+                            platform: env.PLATFORM,
+                            executeMethod: "ODDFramework.PipelineSteamMac.${params.BUILD_TYPE}"
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Log Build Outputs') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Log Build Outputs'
+                    buildUtils.logBuildOutputs("${env.BUILD_PATH}/output")
+                }
+            }
+        }
+
+        stage('Parallel Post-Build') {
+            failFast false
+            parallel {
+                stage('Unity Data Tool') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Unity Data Tool'
+                            buildUtils.runUnityDataTool()
+                        }
+                    }
+                }
+
+                stage('Steam Upload') {
+                    when {
+                        expression { !params.WARMUP && ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Steam Upload'
+                        }
+                        withCredentials([
+                            usernamePassword(credentialsId: 'steam-credentials', usernameVariable: 'STEAM_USERNAME', passwordVariable: 'STEAM_PASSWORD')
+                        ]) {
+                            script {
+                                try {
+                                    def stagingPath = buildUtils.setupSteamStaging("${env.BUILD_PATH}/output")
+                                    def setLive = params.BUILD_TYPE == 'Release' ? 'beta' : 'development'
+
+                                    buildUtils.steamUpload(
+                                        appId: env.STEAM_APP_ID,
+                                        depotId: env.STEAM_DEPOT_ID,
+                                        contentRoot: stagingPath,
+                                        setLive: setLive,
+                                        maxRetries: 3
+                                    )
+
+                                } catch (Exception e) {
+                                    echo "[WARNING] Steam upload failed: ${e.message}"
+                                    buildUtils.setUnstable("Steam upload failed")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.handleBuildSuccess(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+        }
+        unstable {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.handleBuildUnstable(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+        }
+        failure {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.handleBuildFailure(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+        }
+        aborted {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.handleBuildAborted(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+        }
+        always {
+            script {
+                if (!params.WARMUP) {
+                    buildUtils.finalizeBuild(
+                        buildType: params.BUILD_TYPE,
+                        appIcon: env.APP_ICON,
+                        branch: env.BRANCH,
+                        changesetId: env.CHANGESET_ID
+                    )
+                }
+            }
+            script {
+                buildUtils.cleanupSteamStaging()
+            }
+            dir('artifacts') {
+                archiveArtifacts artifacts: "**/*", fingerprint: true, allowEmptyArchive: true
+            }
+            script {
+                buildUtils.cleanupAtWorkspaces()
+            }
+        }
+    }
+}

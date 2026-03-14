@@ -1,0 +1,388 @@
+@Library('tool_jenkins_build_system@main') _
+
+/**
+ * Unity Editor Test Pipeline
+ *
+ * Runs Unity EditMode/PlayMode tests against one or more platform targets in parallel.
+ * Uses shared workspaces from existing build jobs - no separate checkout needed.
+ *
+ * Required Jenkins Environment Variables (set in job config):
+ *   PLASTIC_REPSPEC       - PlasticSCM repository spec for game project (e.g., "UnityProj_TGW@cloud")
+ *   UNITY_PROJECT_NAME    - Unity project folder name (e.g., "UnityProj_TGW")
+ *   APP_NAME              - App name for notifications (e.g., "trucksoffroad")
+ *   APP_ICON              - URL to app icon for notifications
+ *   BUILD_JOB_BASE        - Base name of build jobs (e.g., "game_trucks_off_road")
+ *
+ * Required Jenkins Credentials:
+ *   unity-credentials     - Username/password for Unity license
+ *   gemini-api-key        - Secret text for AI failure analysis (optional)
+ *   slack-token           - Secret text for Slack build notifications (optional)
+ */
+
+pipeline {
+    agent {
+        node {
+            label buildUtils.pickNode(params.NODE, 'Windows')
+        }
+    }
+
+    parameters {
+        persistentString(name: 'BRANCH', defaultValue: '/main', description: 'Branch, changeset, or full selector (e.g. /main, 9613)')
+        string(name: 'NODE', defaultValue: '', description: 'Override build agent (e.g. BUILD1). Leave blank for default.')
+        choice(name: 'TEST_PLATFORM', choices: ['EditMode', 'PlayMode'], description: 'Unity test platform')
+        persistentString(name: 'TEST_FILTER', defaultValue: '', description: 'Unity test filter (class name, namespace, or test name)')
+        persistentString(name: 'TEST_CATEGORY', defaultValue: '', description: 'Unity test category attribute')
+        booleanParam(name: 'PLATFORM_STEAM', defaultValue: true, description: 'Test with StandaloneWindows64 build target')
+        booleanParam(name: 'PLATFORM_ANDROID', defaultValue: false, description: 'Test with Android build target')
+        booleanParam(name: 'PLATFORM_AMAZON', defaultValue: false, description: 'Test with Android build target (Amazon)')
+        booleanParam(name: 'PLATFORM_IOS', defaultValue: false, description: 'Test with iOS build target (runs on macOS agent)')
+    }
+
+    environment {
+        // Paths
+        UNITY_PROJECT = "${WORKSPACE}/plastic/${UNITY_PROJECT_NAME}"
+        ARTIFACT_PATH = "${WORKSPACE}/artifacts"
+
+        // Environment
+        LC_ALL = "en_US.UTF-8"
+        LANG = "en_US.UTF-8"
+        PATH = "C:\\Windows\\System32;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Program Files\\PlasticSCM5\\client;C:\\Program Files\\Git\\bin;${env.LOCALAPPDATA}\\Microsoft\\WindowsApps;${env.PATH}"
+    }
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Validate') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Validate'
+                    def testBuildType = params.TEST_PLATFORM == 'PlayMode' ? 'PlayTest' : 'EditorTest'
+                    buildUtils.init(buildType: testBuildType, branch: params.BRANCH)
+
+                    // Also set in env for notifications
+                    env.BUILD_TYPE = testBuildType
+
+                    def required = ['PLASTIC_REPSPEC', 'UNITY_PROJECT_NAME', 'APP_NAME', 'APP_ICON', 'BUILD_JOB_BASE']
+                    def missing = required.findAll { !env[it]?.trim() }
+                    if (missing) error "Missing env vars: ${missing.join(', ')}\nSet in: Job > Configure > Environment Variables"
+
+                    // Validate at least one platform selected
+                    if (!params.PLATFORM_STEAM && !params.PLATFORM_ANDROID && !params.PLATFORM_AMAZON && !params.PLATFORM_IOS) {
+                        error "No platforms selected - enable at least one PLATFORM_* parameter"
+                    }
+
+                    echo "[Config] Project=${env.UNITY_PROJECT_NAME} BuildJobBase=${env.BUILD_JOB_BASE}"
+                    echo "[Config] TestPlatform=${params.TEST_PLATFORM} Filter=${params.TEST_FILTER ?: '(none)'} Category=${params.TEST_CATEGORY ?: '(none)'}"
+                }
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Checkout'
+
+                    buildUtils.preflightPlasticSCM()
+
+                    def sel = buildUtils.parseSelector(params.BRANCH)
+                    echo "[Checkout] Input: '${params.BRANCH}' -> changeset: ${sel.changeset}, branch: ${sel.branch}"
+
+                    def scmVars = buildUtils.plasticCheckout(
+                        branch: sel.branch,
+                        changeset: sel.changeset
+                    )
+
+                    env.PLASTICSCM_CHANGESET_ID = scmVars.PLASTICSCM_CHANGESET_ID
+                    env.PLASTICSCM_BRANCH = scmVars.PLASTICSCM_BRANCH
+                    env.PLASTICSCM_AUTHOR = scmVars.PLASTICSCM_AUTHOR
+                    env.CHANGESET_ID = scmVars.PLASTICSCM_CHANGESET_ID
+                    env.BRANCH = scmVars.PLASTICSCM_BRANCH
+                    env.PLASTIC_CHANGESET_GUID = scmVars.PLASTICSCM_CHANGESET_GUID
+                }
+            }
+        }
+
+        stage('Startup') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
+                    script {
+                        env.CURRENT_STAGE = 'Startup'
+                        buildUtils.copyPipelineScripts()
+                        buildUtils.startup(env.BUILD_TYPE, env.BRANCH)
+                    }
+                }
+            }
+        }
+
+        stage('Extract Version') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Extract Version'
+                    buildUtils.extractUnityVersion(env.UNITY_PROJECT)
+                }
+            }
+        }
+
+        stage('Unity') {
+            when {
+                expression {
+                    return !buildUtils.shouldSkipPreflight()
+                }
+            }
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Preflight: Unity'
+                    buildUtils.validateUnityInstallation()
+                }
+            }
+        }
+
+        stage('Preflight Checks') {
+            when {
+                expression {
+                    return !buildUtils.shouldSkipPreflight()
+                }
+            }
+            parallel {
+                stage('Network') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Network'
+                            buildUtils.preflightNetwork()
+                        }
+                    }
+                }
+
+                stage('Jenkins Permissions') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Jenkins Permissions'
+                            buildUtils.preflightJenkinsPermissions()
+                        }
+                    }
+                }
+
+                stage('PlasticSCM') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: PlasticSCM'
+                            buildUtils.preflightPlasticSCM()
+                        }
+                    }
+                }
+
+                stage('Ruby') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: Ruby'
+                            buildUtils.preflightRuby()
+                        }
+                    }
+                }
+            }
+            post {
+                success {
+                    script {
+                        buildUtils.markPreflightPassed()
+                    }
+                }
+            }
+        }
+
+        stage('Unity License') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Unity License'
+                    buildUtils.preflightUnityLicense()
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            failFast false
+            parallel {
+                stage('Steam') {
+                    when {
+                        expression { params.PLATFORM_STEAM }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = "Steam ${params.TEST_PLATFORM} Tests"
+                            echo "========================================="
+                            echo "Steam ${params.TEST_PLATFORM} Tests"
+                            echo "Build Target: StandaloneWindows64"
+                            echo "========================================="
+
+                            withCredentials([
+                                usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
+                            ]) {
+                                buildUtils.runUnityTests(
+                                    unityProjectPath: env.UNITY_PROJECT,
+                                    testPlatform: params.TEST_PLATFORM,
+                                    buildTarget: 'StandaloneWindows64',
+                                    testFilter: params.TEST_FILTER,
+                                    testCategory: params.TEST_CATEGORY,
+                                    testResults: "${env.ARTIFACT_PATH}/TestResults-Steam.xml"
+                                )
+                            }
+                        }
+                    }
+                }
+
+                stage('Android') {
+                    when {
+                        expression { params.PLATFORM_ANDROID }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = "Android ${params.TEST_PLATFORM} Tests"
+                            echo "========================================="
+                            echo "Android ${params.TEST_PLATFORM} Tests"
+                            echo "Build Target: Android"
+                            echo "========================================="
+
+                            withCredentials([
+                                usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
+                            ]) {
+                                buildUtils.runUnityTests(
+                                    unityProjectPath: env.UNITY_PROJECT,
+                                    testPlatform: params.TEST_PLATFORM,
+                                    buildTarget: 'Android',
+                                    testFilter: params.TEST_FILTER,
+                                    testCategory: params.TEST_CATEGORY,
+                                    testResults: "${env.ARTIFACT_PATH}/TestResults-Android.xml"
+                                )
+                            }
+                        }
+                    }
+                }
+
+                stage('Amazon') {
+                    when {
+                        expression { params.PLATFORM_AMAZON }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = "Amazon ${params.TEST_PLATFORM} Tests"
+                            echo "========================================="
+                            echo "Amazon ${params.TEST_PLATFORM} Tests"
+                            echo "Build Target: Android (Amazon)"
+                            echo "========================================="
+
+                            withCredentials([
+                                usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
+                            ]) {
+                                buildUtils.runUnityTests(
+                                    unityProjectPath: env.UNITY_PROJECT,
+                                    testPlatform: params.TEST_PLATFORM,
+                                    buildTarget: 'Android',
+                                    testFilter: params.TEST_FILTER,
+                                    testCategory: params.TEST_CATEGORY,
+                                    testResults: "${env.ARTIFACT_PATH}/TestResults-Amazon.xml"
+                                )
+                            }
+                        }
+                    }
+                }
+
+                stage('iOS') {
+                    when {
+                        expression { params.PLATFORM_IOS }
+                    }
+                    agent {
+                        label "iOS"
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = "iOS ${params.TEST_PLATFORM} Tests"
+                            echo "========================================="
+                            echo "iOS ${params.TEST_PLATFORM} Tests"
+                            echo "Build Target: iOS"
+                            echo "========================================="
+
+                            // Re-init on macOS agent
+                            buildUtils.init(buildType: env.BUILD_TYPE, branch: params.BRANCH)
+                            buildUtils.extractUnityVersion(env.UNITY_PROJECT)
+                            buildUtils.validateUnityInstallation()
+
+                            withCredentials([
+                                usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
+                            ]) {
+                                buildUtils.runUnityTests(
+                                    unityProjectPath: env.UNITY_PROJECT,
+                                    testPlatform: params.TEST_PLATFORM,
+                                    buildTarget: 'iOS',
+                                    testFilter: params.TEST_FILTER,
+                                    testCategory: params.TEST_CATEGORY,
+                                    testResults: "${env.ARTIFACT_PATH}/TestResults-iOS.xml"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                buildUtils.handleBuildSuccess(
+                    buildType: env.BUILD_TYPE,
+                    appIcon: env.APP_ICON,
+                    branch: env.BRANCH,
+                    changesetId: env.CHANGESET_ID
+                )
+            }
+        }
+        unstable {
+            script {
+                buildUtils.handleBuildUnstable(
+                    buildType: env.BUILD_TYPE,
+                    appIcon: env.APP_ICON,
+                    branch: env.BRANCH,
+                    changesetId: env.CHANGESET_ID
+                )
+            }
+        }
+        failure {
+            script {
+                buildUtils.handleBuildFailure(
+                    buildType: env.BUILD_TYPE,
+                    appIcon: env.APP_ICON,
+                    branch: env.BRANCH,
+                    changesetId: env.CHANGESET_ID
+                )
+            }
+        }
+        aborted {
+            script {
+                buildUtils.handleBuildAborted(
+                    buildType: env.BUILD_TYPE,
+                    appIcon: env.APP_ICON,
+                    branch: env.BRANCH,
+                    changesetId: env.CHANGESET_ID
+                )
+            }
+        }
+        always {
+            script {
+                buildUtils.finalizeBuild(
+                    buildType: env.BUILD_TYPE,
+                    appIcon: env.APP_ICON,
+                    branch: env.BRANCH,
+                    changesetId: env.CHANGESET_ID
+                )
+            }
+            dir('artifacts') {
+                archiveArtifacts artifacts: "**/*", fingerprint: true, allowEmptyArchive: true
+                junit testResults: "**/*.xml", allowEmptyResults: true
+            }
+            script {
+                buildUtils.cleanupAtWorkspaces()
+            }
+        }
+    }
+}

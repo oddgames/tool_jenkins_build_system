@@ -1,0 +1,253 @@
+/**
+ * Steam Auth — Pre-authorize SteamCMD on all build agents
+ *
+ * Standalone pipeline (no shared library). Discovers all online nodes with
+ * 'Windows' and 'OSX' labels, then tests SteamCMD authentication on each
+ * in parallel. If Steam Guard is needed, pauses with a Jenkins input prompt.
+ *
+ * Required Jenkins Credentials:
+ *   steam-credentials  - Username/password for Steam
+ */
+
+@NonCPS
+def getOnlineNodes(String label) {
+    def jenkins = jenkins.model.Jenkins.get()
+    def labelObj = jenkins.getLabel(label)
+    if (labelObj == null) return []
+
+    def names = []
+    for (def n : labelObj.getNodes()) {
+        def computer = n.toComputer()
+        if (computer != null && computer.isOnline()) {
+            names << n.displayName
+        }
+    }
+    return names
+}
+
+def findOrInstallSteamCMD() {
+    if (isUnix()) {
+        def home = env.HOME ?: sh(script: 'echo $HOME', returnStdout: true).trim()
+        def steamCmdPath = "${home}/.buildtools/steamcmd/steamcmd.sh"
+
+        def exists = sh(script: "[ -f '${steamCmdPath}' ] && echo found || echo notfound", returnStdout: true).trim()
+        if (exists == 'found') return steamCmdPath
+
+        echo "[INFO] Installing SteamCMD..."
+        sh """
+            set -e
+            STEAMCMD_DIR="${home}/.buildtools/steamcmd"
+            TEMP_DIR="\$(mktemp -d)"
+            mkdir -p "\$STEAMCMD_DIR"
+            curl -fsSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_osx.tar.gz" -o "\$TEMP_DIR/steamcmd.tar.gz"
+            tar -xzf "\$TEMP_DIR/steamcmd.tar.gz" -C "\$STEAMCMD_DIR"
+            rm -rf "\$TEMP_DIR"
+            "\$STEAMCMD_DIR/steamcmd.sh" +quit || true
+        """
+        return steamCmdPath
+    } else {
+        def steamCmdPath = 'C:\\BuildTools\\steamcmd\\steamcmd.exe'
+
+        def exists = bat(script: "@if exist \"${steamCmdPath}\" echo found", returnStdout: true).trim()
+        if (exists == 'found') return steamCmdPath
+
+        echo "[INFO] Installing SteamCMD..."
+        bat """
+            @echo off
+            setlocal EnableDelayedExpansion
+            set "STEAMCMD_DIR=C:\\BuildTools\\steamcmd"
+            set "TEMP_DIR=%TEMP%\\steamcmd_install"
+            if not exist "%STEAMCMD_DIR%" mkdir "%STEAMCMD_DIR%"
+            if not exist "%TEMP_DIR%" mkdir "%TEMP_DIR%"
+            powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip' -OutFile '%TEMP_DIR%\\steamcmd.zip'"
+            if errorlevel 1 exit /b 1
+            powershell -Command "Expand-Archive -Path '%TEMP_DIR%\\steamcmd.zip' -DestinationPath '%STEAMCMD_DIR%' -Force"
+            if errorlevel 1 exit /b 1
+            rmdir /s /q "%TEMP_DIR%"
+            "%STEAMCMD_DIR%\\steamcmd.exe" +quit
+        """
+        return steamCmdPath
+    }
+}
+
+def steamLogin(String steamCmdPath) {
+    withCredentials([usernamePassword(credentialsId: 'steam-credentials', usernameVariable: 'STEAM_USERNAME', passwordVariable: 'STEAM_PASSWORD')]) {
+        echo "[INFO] Testing Steam authentication..."
+
+        def testResult = ''
+        def timedOut = false
+
+        if (isUnix()) {
+            try {
+                timeout(time: 60, unit: 'SECONDS') {
+                    testResult = sh(
+                        script: "\"${steamCmdPath}\" +login \"\${STEAM_USERNAME}\" \"\${STEAM_PASSWORD}\" +quit 2>&1 || true",
+                        returnStdout: true
+                    ).trim()
+                }
+            } catch (Exception e) {
+                timedOut = true
+            }
+        } else {
+            def logFile = "${env.WORKSPACE}\\steamcmd_login_test.log"
+            def steamCmdDir = steamCmdPath.replace('\\steamcmd.exe', '')
+            try {
+                timeout(time: 5, unit: 'MINUTES') {
+                    bat """
+                        @echo off
+                        cd /d "${steamCmdDir}"
+                        "${steamCmdPath}" +login %STEAM_USERNAME% %STEAM_PASSWORD% +quit > "${logFile}" 2>&1
+                    """
+                }
+            } catch (Exception e) {
+                timedOut = true
+            }
+            try {
+                testResult = readFile(file: logFile).trim()
+            } catch (Exception e) {
+                echo "[WARN] Could not read SteamCMD output log"
+            }
+        }
+
+        echo "[INFO] SteamCMD login output:"
+        echo testResult ?: "(no output)"
+        if (timedOut) echo "[INFO] SteamCMD was killed after timeout"
+
+        def guardKeywords = testResult.contains("Steam Guard") ||
+                            testResult.contains("Two-factor") ||
+                            testResult.contains("Account Logon Denied")
+        def loginSuccess = testResult.contains("Logged in OK") ||
+                           testResult.contains("Waiting for user info")
+        def needsSteamGuard = false
+
+        if (guardKeywords) {
+            needsSteamGuard = true
+        } else if (timedOut && !loginSuccess) {
+            def stuckConnecting = testResult.contains("Connecting anonymously") ||
+                                  testResult.contains("Logging in user") ||
+                                  testResult.isEmpty()
+            if (stuckConnecting) {
+                error("[ERROR] SteamCMD login timed out - could not connect to Steam servers. Output:\n${testResult}")
+            } else {
+                needsSteamGuard = true
+            }
+        }
+
+        if (needsSteamGuard) {
+            echo ""
+            echo "=========================================="
+            echo "Steam Guard Authorization Required"
+            echo "=========================================="
+            echo "A Steam Guard code has been sent to your email/authenticator."
+            echo "Enter the code in Jenkins to continue."
+            echo "=========================================="
+
+            def steamGuardCode = ''
+            try {
+                timeout(time: 30, unit: 'MINUTES') {
+                    steamGuardCode = input(
+                        message: 'Enter Steam Guard code from your email or authenticator',
+                        parameters: [string(
+                            name: 'STEAM_GUARD_CODE',
+                            description: 'Steam Guard code',
+                            trim: true
+                        )]
+                    )
+                }
+            } catch (Exception e) {
+                error("Steam Guard authorization was not provided within 30 minutes")
+            }
+
+            if (!steamGuardCode) {
+                error("No Steam Guard code provided")
+            }
+
+            echo "[INFO] Logging in with Steam Guard code..."
+            def guardResult
+            withEnv(["STEAM_GUARD_CODE=${steamGuardCode}"]) {
+                if (isUnix()) {
+                    guardResult = sh(
+                        script: "\"${steamCmdPath}\" +set_steam_guard_code \"\${STEAM_GUARD_CODE}\" +login \"\${STEAM_USERNAME}\" \"\${STEAM_PASSWORD}\" +quit 2>&1 || true",
+                        returnStdout: true
+                    ).trim()
+                } else {
+                    def steamCmdDir = steamCmdPath.replace('\\steamcmd.exe', '')
+                    guardResult = bat(
+                        script: """
+                            @echo off
+                            cd /d "${steamCmdDir}"
+                            "${steamCmdPath}" +set_steam_guard_code %STEAM_GUARD_CODE% +login %STEAM_USERNAME% %STEAM_PASSWORD% +quit
+                        """,
+                        returnStdout: true
+                    ).trim()
+                }
+            }
+
+            echo "[INFO] Login output: ${guardResult}"
+
+            if (guardResult.contains("Logged in OK") || guardResult.contains("Waiting for user info")) {
+                echo "[OK] Steam Guard authorization successful - token cached for future builds"
+            } else if (guardResult.contains("Steam Guard") || guardResult.contains("Account Logon Denied")) {
+                error("Steam Guard code was rejected - check the code and retry")
+            } else {
+                echo "[WARNING] Uncertain login status after Steam Guard"
+            }
+        } else if (loginSuccess) {
+            echo "[OK] Steam authentication successful"
+        } else {
+            echo "[WARNING] Uncertain Steam auth status"
+            echo "[INFO] Login output: ${testResult}"
+        }
+    }
+}
+
+pipeline {
+    agent none
+
+    options {
+        skipDefaultCheckout()
+    }
+
+    stages {
+        stage('Authorize Nodes') {
+            steps {
+                script {
+                    def windowsNodes = getOnlineNodes('Windows')
+                    def osxNodes = getOnlineNodes('OSX')
+
+                    echo "[INFO] Windows nodes online: ${windowsNodes.join(', ') ?: 'none'}"
+                    echo "[INFO] macOS nodes online: ${osxNodes.join(', ') ?: 'none'}"
+
+                    if (!windowsNodes && !osxNodes) {
+                        error "No online nodes found with 'Windows' or 'OSX' labels"
+                    }
+
+                    def branches = [:]
+
+                    for (def nodeName : (windowsNodes + osxNodes)) {
+                        def name = nodeName
+                        branches["${name}"] = {
+                            node(name) {
+                                stage("${name}: SteamCMD") {
+                                    def steamCmdPath = findOrInstallSteamCMD()
+                                    steamLogin(steamCmdPath)
+                                }
+                            }
+                        }
+                    }
+
+                    parallel branches
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "[OK] All nodes authorized for Steam"
+        }
+        failure {
+            echo "[FAILED] Some nodes could not be authorized - check the logs above"
+        }
+    }
+}
