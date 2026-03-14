@@ -1875,25 +1875,27 @@ def preflightUnityDataTool() {
 }
 
 def preflightPlasticSCM() {
-    // Always refresh the SSO token — tokens can expire or be invalidated when
-    // multiple build agents authenticate with the same credentials
-    withCredentials([string(credentialsId: 'plastic-token', variable: 'PLASTIC_TOKEN')]) {
-        sh '''
-            cm version || exit 1
+    // Lock Plastic auth so only one agent refreshes the SSO token at a time.
+    // Concurrent SSO logins can invalidate each other's sessions.
+    lock(resource: 'plastic-scm-auth', quantity: 1) {
+        withCredentials([string(credentialsId: 'plastic-token', variable: 'PLASTIC_TOKEN')]) {
+            sh '''
+                cm version || exit 1
 
-            # Delete and recreate profile to ensure token is fresh
-            if cm profile list | grep -q "oddgames_external@cloud"; then
-                cm profile delete oddgames_external@cloud >/dev/null 2>&1 || true
-            fi
-            cm profile create \
-                --server=oddgames_external@cloud \
-                --username=builds@oddgames.com.au \
-                --token="$PLASTIC_TOKEN" \
-                --workingmode=SSOWorkingMode
+                # Delete and recreate profile to ensure token is fresh
+                if cm profile list | grep -q "oddgames_external@cloud"; then
+                    cm profile delete oddgames_external@cloud >/dev/null 2>&1 || true
+                fi
+                cm profile create \
+                    --server=oddgames_external@cloud \
+                    --username=builds@oddgames.com.au \
+                    --token="$PLASTIC_TOKEN" \
+                    --workingmode=SSOWorkingMode
 
-            cm whoami || exit 1
-            echo "PlasticSCM authenticated"
-        '''
+                cm whoami || exit 1
+                echo "PlasticSCM authenticated"
+            '''
+        }
     }
 }
 

@@ -2877,16 +2877,18 @@ def preflightPlasticSCM() {
         error "[ERROR] PlasticSCM not available: ${plasticCheck.message}"
     }
 
-    // Always refresh the SSO token — tokens can expire or be invalidated when
-    // multiple build agents authenticate with the same credentials
-    withCredentials([string(credentialsId: 'plastic-token', variable: 'PLASTIC_TOKEN')]) {
-        bat '''@echo off
-            cm profile list | findstr /C:"oddgames_external@cloud" >nul 2>&1 && (
-                cm profile delete oddgames_external@cloud >nul 2>&1
-            )
-            cm profile create --server=oddgames_external@cloud --username=builds@oddgames.com.au --token="%PLASTIC_TOKEN%" --workingmode=SSOWorkingMode
-            cm whoami || exit /b 1
-            echo PlasticSCM authenticated >&2'''
+    // Lock Plastic auth so only one agent refreshes the SSO token at a time.
+    // Concurrent SSO logins can invalidate each other's sessions.
+    lock(resource: 'plastic-scm-auth', quantity: 1) {
+        withCredentials([string(credentialsId: 'plastic-token', variable: 'PLASTIC_TOKEN')]) {
+            bat '''@echo off
+                cm profile list | findstr /C:"oddgames_external@cloud" >nul 2>&1 && (
+                    cm profile delete oddgames_external@cloud >nul 2>&1
+                )
+                cm profile create --server=oddgames_external@cloud --username=builds@oddgames.com.au --token="%PLASTIC_TOKEN%" --workingmode=SSOWorkingMode
+                cm whoami || exit /b 1
+                echo PlasticSCM authenticated >&2'''
+        }
     }
     echo "[OK] PlasticSCM authenticated"
 }
