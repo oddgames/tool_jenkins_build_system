@@ -480,6 +480,7 @@ def convertAabToApk(Map config) { platform.convertAabToApk(config) }
 def uploadToGoogleDrive(Map config) { platform.uploadToGoogleDrive(config) }
 def uploadToLocalShare(Map config) { platform.uploadToLocalShare(config) }
 def uploadToGCS(Map config) { platform.uploadToGCS(config) }
+def amazonUpload(Map config) { platform.amazonUpload(config) }
 def uploadToGooglePlay(Map config) { platform.uploadToGooglePlay(config) }
 def uploadCrashlyticsSymbols(Map config) { platform.uploadCrashlyticsSymbols(config) }
 def analyzeErrorsWithGemini(String plat, String buildType) { platform.analyzeErrorsWithGemini(plat, buildType) }

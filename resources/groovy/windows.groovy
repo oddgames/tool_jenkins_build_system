@@ -5778,6 +5778,55 @@ def uploadToGooglePlay(Map config) {
 // AMAZON APP STORE UPLOAD
 // ============================================================================
 
+/**
+ * Upload APK to Amazon Appstore via App Submission API.
+ * Creates an edit, replaces the APK, does NOT commit (manual review on console).
+ *
+ * Requires environment variables: AMAZON_CLIENT_ID, AMAZON_CLIENT_SECRET, AMAZON_APP_ID
+ * (first two injected via withCredentials in the Jenkinsfile)
+ *
+ * @param config.buildPath  Path to build output directory containing the APK
+ */
+def amazonUpload(Map config) {
+    def buildPath = config.buildPath ?: env.BUILD_PATH
+
+    if (!env.AMAZON_APP_ID?.trim()) {
+        error "[Amazon] AMAZON_APP_ID not set — configure it in the job environment variables"
+    }
+
+    // Find the APK in the build path
+    def apkFile = bat(script: """@echo off
+for %%f in ("${buildPath}\\*.apk") do (
+    echo %%f
+    goto :eof
+)""", returnStdout: true).trim()
+
+    if (!apkFile) {
+        error "[Amazon] No APK found in ${buildPath}"
+    }
+
+    echo "[Amazon] Found APK: ${apkFile}"
+
+    // Copy the upload script to the build directory
+    def scriptContent = libraryResource('scripts/amazon_upload.js')
+    writeFile file: "${buildPath}\\amazon_upload.js", text: scriptContent
+
+    // Run the upload
+    def status = bat(script: """@echo off
+cd /d "${buildPath}"
+node amazon_upload.js "${apkFile}"
+""", returnStatus: true)
+
+    // Cleanup
+    bat script: "@del \"${buildPath}\\amazon_upload.js\" 2>nul", returnStatus: true
+
+    if (status != 0) {
+        error "[Amazon] Upload failed (exit code ${status})"
+    }
+
+    echo "[Amazon] Upload complete — check Amazon Developer Console to review and commit"
+}
+
 // ============================================================================
 // GEMINI ANALYSIS
 // ============================================================================

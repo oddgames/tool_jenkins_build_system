@@ -13,22 +13,29 @@
 //
 
 // ─── Amazon Credentials & Config ─────────────────────────────────────────────
-// App:              MTD (Mega Trucks Demolition)
-// App ID:           amzn1.devportal.mobileapp.8cb5f36a3d8e4ee99da77d979e0d377f
-// Release ID:       amzn1.devportal.apprelease.1a3a71c5561846ba83b0f07aa5b7efff
-// Security Profile: amzn1.application.9410dee4475c414bb9b0581db1a46e4b
-// Client ID:        amzn1.application-oa2-client.8e334808268a48b59172123b0380bbb2
+// Environment variables (set by Jenkins withCredentials or export manually):
+//   AMAZON_CLIENT_ID     - OAuth2 client ID
+//   AMAZON_CLIENT_SECRET - OAuth2 client secret
+//   AMAZON_APP_ID        - App ID from Amazon Developer Console
 // ──────────────────────────────────────────────────────────────────────────────
 
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
 
-const CLIENT_ID = "amzn1.application-oa2-client.8e334808268a48b59172123b0380bbb2";
-const CLIENT_SECRET = "ea2f283a48ef91b8c3889fbb4175e4acc9799b665c99ce5eb359a5fe425f03d9";
-const APP_ID = "amzn1.devportal.mobileapp.8cb5f36a3d8e4ee99da77d979e0d377f";
-const DEFAULT_APK = "C:\\Users\\David\\Downloads\\MTD_3.94.13287_Release_Amazon.apk";
-const APK_PATH = process.argv[2] || DEFAULT_APK;
+const CLIENT_ID = process.env.AMAZON_CLIENT_ID;
+const CLIENT_SECRET = process.env.AMAZON_CLIENT_SECRET;
+const APP_ID = process.env.AMAZON_APP_ID;
+const APK_PATH = process.argv[2];
+
+if (!CLIENT_ID || !CLIENT_SECRET || !APP_ID) {
+  console.error("[ERROR] Missing required environment variables: AMAZON_CLIENT_ID, AMAZON_CLIENT_SECRET, AMAZON_APP_ID");
+  process.exit(1);
+}
+if (!APK_PATH && process.argv[2] !== "--attach") {
+  console.error("[ERROR] Usage: node amazon_upload.js <apk-path>");
+  process.exit(1);
+}
 
 const API_VERSION = "v1";
 

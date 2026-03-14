@@ -4,9 +4,14 @@
 const https = require("https");
 const fs = require("fs");
 
-const CLIENT_ID = "amzn1.application-oa2-client.8e334808268a48b59172123b0380bbb2";
-const CLIENT_SECRET = "ea2f283a48ef91b8c3889fbb4175e4acc9799b665c99ce5eb359a5fe425f03d9";
-const APP_ID = "amzn1.devportal.mobileapp.8cb5f36a3d8e4ee99da77d979e0d377f";
+const CLIENT_ID = process.env.AMAZON_CLIENT_ID;
+const CLIENT_SECRET = process.env.AMAZON_CLIENT_SECRET;
+const APP_ID = process.env.AMAZON_APP_ID;
+
+if (!CLIENT_ID || !CLIENT_SECRET || !APP_ID) {
+  console.error("[ERROR] Missing required environment variables: AMAZON_CLIENT_ID, AMAZON_CLIENT_SECRET, AMAZON_APP_ID");
+  process.exit(1);
+}
 
 function req(url, opts, body) {
   return new Promise((resolve, reject) => {

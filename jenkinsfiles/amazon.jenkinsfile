@@ -433,6 +433,27 @@ pipeline {
                     }
                 }
 
+                stage('Amazon Upload') {
+                    when {
+                        expression { !params.WARMUP }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Amazon Upload'
+                        }
+                        withCredentials([
+                            string(credentialsId: 'amazon-client-id', variable: 'AMAZON_CLIENT_ID'),
+                            string(credentialsId: 'amazon-client-secret', variable: 'AMAZON_CLIENT_SECRET')
+                        ]) {
+                            script {
+                                buildUtils.amazonUpload(
+                                    buildPath: env.BUILD_PATH
+                                )
+                            }
+                        }
+                    }
+                }
+
             }
         }
     }
