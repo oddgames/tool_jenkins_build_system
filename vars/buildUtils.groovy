@@ -416,7 +416,9 @@ def cleanupAtWorkspaces() {
     // Strip any @N suffix from WORKSPACE so we clean relative to the base path
     def baseWs = ws.replaceAll(/@\d+$/, '')
 
-    def suffixes = ['@libs', '@script', '@tmp']
+    // Skip @tmp — Jenkins uses it for the current build's temp batch/shell scripts.
+    // Deleting it mid-build causes subsequent bat/sh steps to hang or fail.
+    def suffixes = ['@libs', '@script']
     for (suffix in suffixes) {
         def target = "${baseWs}${suffix}"
         try {
