@@ -1225,7 +1225,7 @@ def getRequiredUnityModules(String platform) {
     switch (platform) {
         case 'Android':
         case 'Amazon':
-            return ['android', 'android-open-jdk']  // -cm should pull sub-deps but verify JDK explicitly
+            return ['android']  // -cm pulls android-sdk-ndk-tools + android-open-jdk automatically
         case 'iOS':
             return ['ios']
         case 'StandaloneWindows64':
@@ -3849,6 +3849,13 @@ def validateUnityInstallation() {
         verifyAndroidNdk(playbackEngines)
     }
 
+    // Verify Android OpenJDK is present — Hub's -cm flag should install it with the
+    // 'android' module, but Unity 6 renamed the child module ID (e.g. android-open-jdk-17.0.9+9)
+    // so we can't install it by the old name. If missing, query Hub for the real ID and retry.
+    if (env.PLATFORM in ['Android', 'Amazon']) {
+        verifyAndroidJdk(playbackEngines)
+    }
+
     // Accept Android SDK licenses after modules are installed
     if (env.PLATFORM in ['Android', 'Amazon']) {
         acceptAndroidSdkLicenses()
@@ -3985,6 +3992,73 @@ def verifyAndroidNdk(String playbackEngines) {
         } else {
             error "[ERROR] Android NDK is required for IL2CPP builds but is not installed.\n" +
                   "Install via Unity Hub: \"Unity Hub.exe\" -- --headless install-modules -v ${env.UNITY_VERSION} -m android-sdk-ndk-tools -cm"
+        }
+    }
+}
+
+/**
+ * Verify Android OpenJDK is present in the Unity installation.
+ * Unity Hub's -cm flag should install it alongside the 'android' module, but sometimes
+ * it doesn't. Unity 6 renamed the module ID (e.g. 'android-open-jdk' → 'android-open-jdk-17.0.9+9'),
+ * so we try the old name first, parse Hub's "Did you mean:" suggestion, then retry.
+ */
+def verifyAndroidJdk(String playbackEngines) {
+    def jdkPath = "${playbackEngines}\\AndroidPlayer\\OpenJDK"
+    def exists = bat(script: "@if exist \"${jdkPath}\\bin\\java.exe\" echo found", returnStdout: true).trim()
+
+    if (exists == 'found') {
+        echo "[OK] Android OpenJDK found at: ${jdkPath}"
+        return
+    }
+
+    echo "[WARN] Android OpenJDK not found at: ${jdkPath}"
+
+    // Try installing with the legacy module name. If Hub doesn't recognize it,
+    // it prints 'Did you mean: android-open-jdk-17.0.9+9' — we parse that and retry.
+    def hubExe = env.UNITY_HUB_PATH
+    bat script: "@taskkill /f /im \"${hubExe.split('\\\\').last()}\" >nul 2>&1 || exit /b 0"
+
+    def cmd = "cmd /c \"\"${hubExe}\" -- --headless install-modules --version ${env.UNITY_VERSION} -m android-open-jdk -cm\""
+    echo "[INFO] Running: ${cmd}"
+    def output = ''
+    try {
+        timeout(time: 15, unit: 'MINUTES') {
+            output = bat(script: "@${cmd} 2>&1 || exit /b 0", returnStdout: true).trim()
+        }
+    } catch (Exception e) {
+        echo "[WARN] install-modules timed out: ${e.message}"
+    }
+    if (output) { echo output }
+
+    // Check if Hub suggested the real module name
+    if (output.contains('Did you mean') || output.contains("Couldn't find module")) {
+        def matcher = output =~ /(?i)(android-open-jdk[\w.+\-]+)/
+        if (matcher.find()) {
+            def realModuleId = matcher.group(1)
+            echo "[INFO] Hub suggested correct module ID: ${realModuleId}"
+            try {
+                installUnityModules(env.UNITY_VERSION, [realModuleId])
+            } catch (Exception e) {
+                echo "[WARN] ${realModuleId} install failed: ${e.message}"
+            }
+        }
+    }
+
+    // Re-check
+    exists = bat(script: "@if exist \"${jdkPath}\\bin\\java.exe\" echo found", returnStdout: true).trim()
+    if (exists == 'found') {
+        echo "[OK] Android OpenJDK installed successfully"
+    } else {
+        // Set JAVA_HOME to system JDK as last resort
+        def systemJava = bat(script: '@where java 2>nul', returnStdout: true).trim()
+        if (systemJava) {
+            def javaDir = systemJava.split('\n')[0].trim().replaceAll('\\\\bin\\\\java\\.exe$', '')
+            env.JAVA_HOME = javaDir
+            echo "[WARN] Android OpenJDK missing — falling back to system JDK: ${javaDir}"
+        } else {
+            error "[ERROR] Android OpenJDK is not installed and no system JDK found.\n" +
+                  "Install manually: \"Unity Hub.exe\" -- --headless install-modules -v ${env.UNITY_VERSION} -m <jdk-module-id> -cm\n" +
+                  "Or install a system JDK: winget install Microsoft.OpenJDK.17"
         }
     }
 }

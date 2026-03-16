@@ -130,7 +130,7 @@ public static BuildOptions GetBuildOptions()
 
             // After setting to null, Unity resolves the embedded path internally.
             // If the resolved path doesn't contain java, fall back to JAVA_HOME.
-            string javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
+            string javaHome = System.Environment.GetEnvironmentVariable("JAVA_HOME");
             string unityEditorPath = Path.GetDirectoryName(UnityEditor.EditorApplication.applicationPath);
             string bundledJdkPath = Path.Combine(unityEditorPath, "Data", "PlaybackEngines", "AndroidPlayer", "OpenJDK");
 

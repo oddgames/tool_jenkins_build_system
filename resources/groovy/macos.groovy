@@ -278,7 +278,7 @@ def getRequiredUnityModules(String platform) {
             return ['ios']
         case 'Android':
         case 'Amazon':
-            return ['android', 'android-open-jdk']  // -cm should pull sub-deps but verify JDK explicitly
+            return ['android']  // -cm pulls android-sdk-ndk-tools + android-open-jdk automatically
         case 'StandaloneOSX':
             return ['mac-il2cpp']
         default:
@@ -2681,6 +2681,11 @@ def validateUnityInstallation() {
         verifyAndroidNdk(playbackEngines)
     }
 
+    // Verify Android OpenJDK is present — Unity 6 renamed the child module ID
+    if (env.PLATFORM in ['Android', 'Amazon']) {
+        verifyAndroidJdk(playbackEngines)
+    }
+
     // Accept Android SDK licenses after modules are installed
     if (env.PLATFORM in ['Android', 'Amazon']) {
         acceptAndroidSdkLicenses()
@@ -2786,6 +2791,69 @@ def verifyAndroidNdk(String playbackEngines) {
         } else {
             error "[ERROR] Android NDK is required for IL2CPP builds but is not installed.\n" +
                   "Install via Unity Hub: \"Unity Hub\" -- --headless install-modules -v ${env.UNITY_VERSION} -m android-sdk-ndk-tools -cm"
+        }
+    }
+}
+
+/**
+ * Verify Android OpenJDK is present in the Unity installation.
+ * Unity Hub's -cm flag should install it alongside the 'android' module, but sometimes
+ * it doesn't. Unity 6 renamed the module ID (e.g. 'android-open-jdk' → 'android-open-jdk-17.0.9+9'),
+ * so we try the old name first, parse Hub's "Did you mean:" suggestion, then retry.
+ */
+def verifyAndroidJdk(String playbackEngines) {
+    def jdkPath = "${playbackEngines}/AndroidPlayer/OpenJDK"
+    def exists = sh(script: "[ -f '${jdkPath}/bin/java' ] && echo found || echo notfound", returnStdout: true).trim()
+
+    if (exists == 'found') {
+        echo "[OK] Android OpenJDK found at: ${jdkPath}"
+        return
+    }
+
+    echo "[WARN] Android OpenJDK not found at: ${jdkPath}"
+
+    // Try installing with the legacy module name. If Hub doesn't recognize it,
+    // it prints 'Did you mean: android-open-jdk-17.0.9+9' — we parse that and retry.
+    def cmd = "'${env.UNITY_HUB_PATH}' -- --headless install-modules --version ${env.UNITY_VERSION} -m android-open-jdk -cm"
+    echo "[INFO] Running: ${cmd}"
+    def output = ''
+    try {
+        timeout(time: 15, unit: 'MINUTES') {
+            output = sh(script: "${cmd} 2>&1 || true", returnStdout: true).trim()
+        }
+    } catch (Exception e) {
+        echo "[WARN] install-modules timed out: ${e.message}"
+    }
+    if (output) { echo output }
+
+    // Check if Hub suggested the real module name
+    if (output.contains('Did you mean') || output.contains("Couldn't find module")) {
+        def matcher = output =~ /(?i)(android-open-jdk[\w.+\-]+)/
+        if (matcher.find()) {
+            def realModuleId = matcher.group(1)
+            echo "[INFO] Hub suggested correct module ID: ${realModuleId}"
+            try {
+                installUnityModules(env.UNITY_VERSION, [realModuleId])
+            } catch (Exception e) {
+                echo "[WARN] ${realModuleId} install failed: ${e.message}"
+            }
+        }
+    }
+
+    // Re-check
+    exists = sh(script: "[ -f '${jdkPath}/bin/java' ] && echo found || echo notfound", returnStdout: true).trim()
+    if (exists == 'found') {
+        echo "[OK] Android OpenJDK installed successfully"
+    } else {
+        def systemJava = sh(script: 'which java 2>/dev/null || true', returnStdout: true).trim()
+        if (systemJava) {
+            def javaDir = sh(script: "dirname \$(dirname \$(readlink -f '${systemJava}'))", returnStdout: true).trim()
+            env.JAVA_HOME = javaDir
+            echo "[WARN] Android OpenJDK missing — falling back to system JDK: ${javaDir}"
+        } else {
+            error "[ERROR] Android OpenJDK is not installed and no system JDK found.\n" +
+                  "Install manually: \"Unity Hub\" -- --headless install-modules -v ${env.UNITY_VERSION} -m <jdk-module-id> -cm\n" +
+                  "Or install a system JDK: brew install openjdk@17"
         }
     }
 }
