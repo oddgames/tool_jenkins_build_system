@@ -120,12 +120,36 @@ public static BuildOptions GetBuildOptions()
         private static void UseEmbeddedAndroidTools()
         {
 #if UNITY_ANDROID
-            // Setting paths to empty tells Unity to use its bundled tools ("Installed with Unity")
+            // Setting paths to null tells Unity to use its bundled tools ("Installed with Unity").
+            // But if the bundled JDK is missing (module not installed), fall back to JAVA_HOME.
             // See: https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Android.AndroidExternalToolsSettings-jdkRootPath.html
-            AndroidExternalToolsSettings.jdkRootPath = null;
+
+            // Check if embedded JDK actually exists before telling Unity to use it
+            string embeddedJdk = AndroidExternalToolsSettings.jdkRootPath;
+            AndroidExternalToolsSettings.jdkRootPath = null;  // Try embedded first
+
+            // After setting to null, Unity resolves the embedded path internally.
+            // If the resolved path doesn't contain java, fall back to JAVA_HOME.
+            string javaHome = Environment.GetEnvironmentVariable("JAVA_HOME");
+            string unityEditorPath = Path.GetDirectoryName(UnityEditor.EditorApplication.applicationPath);
+            string bundledJdkPath = Path.Combine(unityEditorPath, "Data", "PlaybackEngines", "AndroidPlayer", "OpenJDK");
+
+            if (!Directory.Exists(bundledJdkPath))
+            {
+                if (!string.IsNullOrEmpty(javaHome) && Directory.Exists(javaHome))
+                {
+                    AndroidExternalToolsSettings.jdkRootPath = javaHome;
+                    Log($"⚠ Bundled OpenJDK not found, using JAVA_HOME: {javaHome}");
+                }
+                else
+                {
+                    Log("⚠ Bundled OpenJDK not found and JAVA_HOME not set — build may fail");
+                }
+            }
+
             AndroidExternalToolsSettings.sdkRootPath = null;
             AndroidExternalToolsSettings.ndkRootPath = null;
-            Log("✓ Android external tools set to use embedded (JDK, SDK, NDK)");
+            Log("✓ Android external tools configured (JDK, SDK, NDK)");
 #endif
         }
 

@@ -278,7 +278,7 @@ def getRequiredUnityModules(String platform) {
             return ['ios']
         case 'Android':
         case 'Amazon':
-            return ['android']  // -cm pulls android-sdk-ndk-tools + android-open-jdk automatically
+            return ['android', 'android-open-jdk']  // -cm should pull sub-deps but verify JDK explicitly
         case 'StandaloneOSX':
             return ['mac-il2cpp']
         default:
@@ -817,7 +817,13 @@ def acceptAndroidSdkLicenses() {
 
     def javaHome = ''
     if (env.UNITY_VERSION) {
-        javaHome = "${getPlaybackEnginesPath(env.UNITY_VERSION)}/AndroidPlayer/OpenJDK"
+        def unityJdk = "${getPlaybackEnginesPath(env.UNITY_VERSION)}/AndroidPlayer/OpenJDK"
+        def jdkExists = sh(script: "[ -f '${unityJdk}/bin/java' ] && echo found || echo notfound", returnStdout: true).trim()
+        if (jdkExists == 'found') {
+            javaHome = unityJdk
+        } else if (env.JAVA_HOME) {
+            javaHome = env.JAVA_HOME
+        }
     }
 
     // Detect target SDK version from the Unity project and install if needed
