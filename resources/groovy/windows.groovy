@@ -2250,32 +2250,54 @@ def installNodeJS() {
                     echo [ERROR] Node.js installation failed
                     exit /b 1
                 )
-                echo [OK] Node.js installed - restart Jenkins agent to update PATH
             """
-            return [available: false, installed: true, message: 'Node.js installed - restart agent to update PATH']
         } catch (Exception e) {
             echo "[WARN] winget install failed: ${e.message}"
         }
+    } else {
+        // Try chocolatey as fallback
+        try {
+            def chocoVersion = bat(script: '@choco --version', returnStdout: true).trim()
+            if (chocoVersion) {
+                echo "[INFO] Installing Node.js via Chocolatey..."
+                bat """
+                    @echo off
+                    choco install nodejs-lts -y
+                    if errorlevel 1 (
+                        echo [ERROR] Node.js installation failed
+                        exit /b 1
+                    )
+                """
+            }
+        } catch (Exception e) {
+            // Chocolatey not available
+        }
     }
 
-    // Try chocolatey as fallback
-    try {
-        def chocoVersion = bat(script: '@choco --version', returnStdout: true).trim()
-        if (chocoVersion) {
-            echo "[INFO] Installing Node.js via Chocolatey..."
-            bat """
-                @echo off
-                choco install nodejs-lts -y
-                if errorlevel 1 (
-                    echo [ERROR] Node.js installation failed
-                    exit /b 1
-                )
-                echo [OK] Node.js installed - restart Jenkins agent to update PATH
-            """
-            return [available: false, installed: true, message: 'Node.js installed - restart agent to update PATH']
+    // Refresh PATH from registry — winget/choco update the system PATH but the
+    // current Jenkins process still has the old PATH from when the agent started.
+    def refreshedPath = bat(script: '''@echo off
+        for /f "tokens=2*" %%a in ('reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment" /v Path 2^>nul') do set "SYS_PATH=%%b"
+        for /f "tokens=2*" %%a in ('reg query "HKCU\\Environment" /v Path 2^>nul') do set "USR_PATH=%%b"
+        echo %SYS_PATH%;%USR_PATH%''', returnStdout: true).trim()
+    if (refreshedPath) {
+        env.PATH = refreshedPath
+        echo "[INFO] Refreshed PATH from registry"
+    }
+
+    // Check common install locations in case PATH refresh missed it
+    def nodePaths = ['C:\\Program Files\\nodejs', 'C:\\Program Files (x86)\\nodejs']
+    for (nodePath in nodePaths) {
+        def found = bat(script: "@if exist \"${nodePath}\\node.exe\" echo found", returnStdout: true).trim()
+        if (found == 'found') {
+            if (!env.PATH.contains(nodePath)) {
+                env.PATH = "${nodePath};${env.PATH}"
+            }
+            env.NODEJS_HOME = nodePath
+            def ver = bat(script: "@\"${nodePath}\\node.exe\" --version", returnStdout: true).trim()
+            echo "[OK] Node.js ${ver} installed at ${nodePath}"
+            return [available: true, installed: true, message: "Node.js ${ver} (installed at ${nodePath})"]
         }
-    } catch (Exception e) {
-        // Chocolatey not available
     }
 
     return [
