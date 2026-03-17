@@ -202,15 +202,42 @@ if ($commitResp.Status -ne 200) {
 }
 Log "COMMIT" "Edit committed (status: $($commitResp.Json.status))"
 
-# --- Step 8: Submit to Live App Testing ---
-Log "LAT" "Submitting to Live App Testing..."
-$latResp = Amazon-Request -Url "$API_BASE/edits/$editId/lat" -Method "PUT" -Token $token
-if ($latResp.Status -eq 200) {
-    Log "LAT" "Submitted to Live App Testing (status: $($latResp.Json.status))"
+# --- Step 8: Add testers to DevTest group ---
+# LAT has no API — it's console-only. But DevTest lets us add testers programmatically.
+# Register the app for DevTest (idempotent if already registered), then add testers
+# from AMAZON_TESTER_EMAILS env var (comma-separated).
+if ($env:AMAZON_TESTER_EMAILS) {
+    Log "DEVTEST" "Registering app for DevTest..."
+    $regResp = Amazon-Request -Url "$API_BASE/devtest/register" -Method "POST" -Token $token `
+        -Body (@{ packageName = ""; certificate = "" } | ConvertTo-Json) -ContentType "application/json"
+    if ($regResp.Status -eq 200) {
+        $trackId = $regResp.Json.trackId
+        Log "DEVTEST" "Registered (trackId: $trackId)"
+
+        $emails = $env:AMAZON_TESTER_EMAILS -split ","
+        $testers = $emails | ForEach-Object {
+            @{ firstName = "Tester"; lastName = ""; email = $_.Trim() }
+        }
+        $testerBody = @{
+            groups = @(@{
+                name = "default_group"
+                testers = @($testers)
+            })
+        } | ConvertTo-Json -Depth 4
+
+        $testerResp = Amazon-Request -Url "$API_BASE/tracks/$trackId/testers" -Method "POST" -Token $token `
+            -Body $testerBody -ContentType "application/json"
+        if ($testerResp.Status -eq 200) {
+            Log "DEVTEST" "Added $($testerResp.Json.uniqueTesterCount) tester(s) to default_group"
+        } else {
+            Log "DEVTEST" "Could not add testers (HTTP $($testerResp.Status)): $($testerResp.Body)"
+        }
+    } else {
+        Log "DEVTEST" "Could not register for DevTest (HTTP $($regResp.Status)): $($regResp.Body)"
+    }
 } else {
-    # LAT submission is best-effort -- may not be enabled for this app
-    Log "LAT" "Could not submit to LAT (HTTP $($latResp.Status)): $($latResp.Body)"
-    Log "LAT" "Edit was committed successfully -- submit to LAT manually if needed"
+    Log "INFO" "No AMAZON_TESTER_EMAILS set -- skipping DevTest tester registration"
+    Log "INFO" "To add testers, set AMAZON_TESTER_EMAILS=email1@example.com,email2@example.com"
 }
 
 Log "DONE" "Edit $editId committed -- https://developer.amazon.com/apps-and-games/console/app/$APP_ID"
