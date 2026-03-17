@@ -5908,6 +5908,13 @@ for %%f in ("${buildPath}\\*.apk") do (
 
     echo "[Amazon] Found APK: ${apkFile}"
 
+    // Ensure node is available — preflight may have been skipped, or PATH may have
+    // changed since preflight ran (agent restart, winget install in another build, etc.)
+    def nodeCheck = checkNodeJS(true)
+    if (!nodeCheck.available) {
+        error "[Amazon] Node.js is required for Amazon upload but is not available: ${nodeCheck.message}"
+    }
+
     // Copy the upload script to the build directory
     def scriptContent = libraryResource('scripts/amazon_upload.js')
     writeFile file: "${buildPath}\\amazon_upload.js", text: scriptContent
