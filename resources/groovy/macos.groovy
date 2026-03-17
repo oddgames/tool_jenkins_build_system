@@ -2801,7 +2801,7 @@ def verifyAndroidNdk(String playbackEngines) {
  * Verify Android OpenJDK is present in the Unity installation.
  * The 'android' module with -cm should install it, but Unity 6 renamed the sub-module
  * (e.g. 'android-open-jdk-17.0.9+9') so it sometimes gets skipped.
- * Fails the build if missing — Unity requires the exact bundled JDK version.
+ * Attempts auto-install if missing, fails the build if that doesn't work.
  */
 def verifyAndroidJdk(String playbackEngines) {
     def jdkPath = "${playbackEngines}/AndroidPlayer/OpenJDK"
@@ -2812,11 +2812,56 @@ def verifyAndroidJdk(String playbackEngines) {
         return
     }
 
-    error "[ERROR] Android OpenJDK is not installed at: ${jdkPath}\n" +
-          "The Unity bundled JDK is required — system JDKs are incompatible.\n" +
-          "Install on the build agent via Unity Hub:\n" +
-          "  \"Unity Hub\" -- --headless install-modules -v ${env.UNITY_VERSION} -m android-open-jdk -cm\n" +
-          "If Hub says 'Couldn't find module', use the versioned name it suggests (e.g. android-open-jdk-17.0.9+9)."
+    echo "[WARN] Android OpenJDK not found at: ${jdkPath}"
+
+    // Ensure Unity Hub is available
+    if (!env.UNITY_HUB_PATH) {
+        def hubCheck = checkUnityHub()
+        if (!hubCheck.available) {
+            error "[ERROR] Android OpenJDK is missing and Unity Hub is not available to install it.\n" +
+                  "Install the android-open-jdk module manually on this build agent."
+        }
+    }
+
+    // Try installing with the legacy module name. If Hub doesn't recognize it,
+    // it prints 'Did you mean: android-open-jdk-17.0.9+9' — we parse that and retry.
+    def cmd = "'${env.UNITY_HUB_PATH}' -- --headless install-modules --version ${env.UNITY_VERSION} -m android-open-jdk -cm"
+    echo "[INFO] Running: ${cmd}"
+    def output = ''
+    try {
+        timeout(time: 15, unit: 'MINUTES') {
+            output = sh(script: "${cmd} 2>&1 || true", returnStdout: true).trim()
+        }
+    } catch (Exception e) {
+        echo "[WARN] install-modules timed out: ${e.message}"
+    }
+    if (output) { echo output }
+
+    // Check if Hub suggested the real module name (Unity 6 versioned IDs)
+    if (output.contains('Did you mean') || output.contains("Couldn't find module")) {
+        def matcher = output =~ /(?i)(android-open-jdk[\w.+\-]+)/
+        if (matcher.find()) {
+            def realModuleId = matcher.group(1)
+            echo "[INFO] Hub suggested correct module ID: ${realModuleId}"
+            try {
+                installUnityModules(env.UNITY_VERSION, [realModuleId])
+            } catch (Exception e) {
+                echo "[WARN] ${realModuleId} install failed: ${e.message}"
+            }
+        }
+    }
+
+    // Re-check
+    exists = sh(script: "[ -f '${jdkPath}/bin/java' ] && echo found || echo notfound", returnStdout: true).trim()
+    if (exists == 'found') {
+        echo "[OK] Android OpenJDK installed successfully"
+    } else {
+        error "[ERROR] Android OpenJDK is not installed and could not be auto-installed.\n" +
+              "The Unity bundled JDK is required — system JDKs are incompatible.\n" +
+              "Install manually on the build agent:\n" +
+              "  \"Unity Hub\" -- --headless install-modules -v ${env.UNITY_VERSION} -m android-open-jdk -cm\n" +
+              "If Hub says 'Couldn't find module', use the versioned name it suggests (e.g. android-open-jdk-17.0.9+9)."
+    }
 }
 
 /**
