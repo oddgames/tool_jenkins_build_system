@@ -240,15 +240,6 @@ pipeline {
                     }
                 }
 
-                stage('Node.js') {
-                    steps {
-                        script {
-                            env.CURRENT_STAGE = 'Preflight: Node.js'
-                            buildUtils.preflightNodeJS()
-                        }
-                    }
-                }
-
                 stage('Python') {
                     steps {
                         script {

@@ -499,6 +499,38 @@ private def _testAllPermissions(currentBuildWrapper) {
         ex.getMessage()
     }
 
+    // --- Amazon upload (HttpURLConnection, file I/O) ---
+    testPermission('URL.openConnection') {
+        new URL('https://example.com').openConnection()
+    }
+    testPermission('HttpURLConnection.setConnectTimeout') {
+        def c = new URL('https://example.com').openConnection()
+        c.setConnectTimeout(1000)
+        c.disconnect()
+    }
+    testPermission('HttpURLConnection.setFixedLengthStreamingMode') {
+        def c = new URL('https://example.com').openConnection()
+        c.setFixedLengthStreamingMode((long)0)
+        c.disconnect()
+    }
+    testPermission('HttpURLConnection.getHeaderField') {
+        def c = new URL('https://example.com').openConnection()
+        c.getHeaderField('ETag')
+        c.disconnect()
+    }
+    testPermission('HttpURLConnection.getErrorStream') {
+        def c = new URL('https://example.com').openConnection()
+        c.getErrorStream()
+        c.disconnect()
+    }
+    testPermission('File.length') {
+        new File('C:\\').length()
+    }
+    testPermission('FileInputStream.new') {
+        // Don't actually open — just test that the class is accessible
+        FileInputStream.class
+    }
+
     return [passed: passed, failures: failures]
 }
 
