@@ -499,33 +499,6 @@ private def _testAllPermissions(currentBuildWrapper) {
         ex.getMessage()
     }
 
-    // --- Amazon upload (HttpURLConnection extensions + file I/O) ---
-    // URL.openConnection, setRequestMethod, setRequestProperty, setConnectTimeout,
-    // setReadTimeout, setDoOutput, getOutputStream, getResponseCode, disconnect are
-    // already exercised by the Slack webhook code in common.groovy.
-    // Only test methods that are NEW to the Amazon upload.
-    def testConn = null
-    testPermission('URL.openConnection') {
-        testConn = new URL('https://example.com').openConnection()
-    }
-    testPermission('HttpURLConnection.setFixedLengthStreamingMode') {
-        if (testConn) testConn.setFixedLengthStreamingMode((long)0)
-    }
-    testPermission('HttpURLConnection.getHeaderField') {
-        if (testConn) testConn.getHeaderField('ETag')
-    }
-    testPermission('HttpURLConnection.getErrorStream') {
-        if (testConn) testConn.getErrorStream()
-    }
-    if (testConn) { try { testConn.disconnect() } catch (Exception e) {} }
-
-    testPermission('File.length') {
-        new File('.').length()
-    }
-    testPermission('File.getName') {
-        new File('test.txt').getName()
-    }
-
     return [passed: passed, failures: failures]
 }
 

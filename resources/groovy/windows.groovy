@@ -5898,7 +5898,7 @@ def uploadToGooglePlay(Map config) {
 /**
  * Upload APK to Amazon Appstore via the App Submission API.
  * Creates an edit, replaces the APK, and stops WITHOUT committing.
- * Pure Groovy — no Node.js dependency.
+ * Uses PowerShell on the agent for all HTTP calls (file is local to agent, not controller).
  *
  * Requires env: AMAZON_CLIENT_ID, AMAZON_CLIENT_SECRET, AMAZON_APP_ID
  * Ref: https://developer.amazon.com/api/appstore/v1
@@ -5923,177 +5923,24 @@ for %%f in ("${buildPath}\\*.apk") do (
     if (!apkFile) {
         error "[Amazon] No APK found in ${buildPath}"
     }
+    echo "[Amazon] Found APK: ${apkFile}"
 
-    def apkSize = new File(apkFile).length()
-    def sizeMB = String.format("%.1f", apkSize / (1024.0 * 1024.0))
-    echo "[Amazon] Found APK: ${apkFile} (${sizeMB} MB)"
+    // Write the upload script to a temp file and run it on the agent via PowerShell.
+    // This avoids the controller/agent split problem with Groovy File/HTTP APIs.
+    def psScript = libraryResource('scripts/amazon_upload.ps1')
+    def scriptPath = "${buildPath}\\amazon_upload.ps1"
+    writeFile file: scriptPath, text: psScript
 
-    def appId = env.AMAZON_APP_ID
-    def apiBase = "https://developer.amazon.com/api/appstore/v1/applications/${appId}"
+    def status = bat(script: """@powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}" "${apkFile}" """, returnStatus: true)
 
-    // Step 1: OAuth2 token
-    echo "[AUTH] Requesting OAuth token from api.amazon.com..."
-    def tokenBody = groovy.json.JsonOutput.toJson([
-        grant_type: 'client_credentials',
-        client_id: env.AMAZON_CLIENT_ID,
-        client_secret: env.AMAZON_CLIENT_SECRET,
-        scope: 'appstore::apps:readwrite'
-    ])
-    def tokenResp = amazonApiRequest('https://api.amazon.com/auth/O2/token', 'POST', null, tokenBody, 'application/json')
-    if (tokenResp.status != 200 || !tokenResp.json?.access_token) {
-        error "[Amazon] Auth failed (HTTP ${tokenResp.status}): ${tokenResp.body}"
-    }
-    def token = tokenResp.json.access_token
-    echo "[AUTH] Token acquired (expires in ${tokenResp.json.expires_in}s)"
+    // Cleanup
+    bat script: "@del \"${scriptPath}\" 2>nul", returnStatus: true
 
-    // Step 2: Check for existing edit and delete it (only one allowed at a time)
-    echo "[EDIT] Checking for existing edit..."
-    def editResp = amazonApiRequest("${apiBase}/edits", 'GET', token)
-    if (editResp.status == 200 && editResp.json?.id) {
-        echo "[EDIT] Found existing edit: ${editResp.json.id} (status: ${editResp.json.status}) — deleting..."
-        def delResp = amazonApiRequest("${apiBase}/edits/${editResp.json.id}", 'DELETE', token, null, null, editResp.etag)
-        if (delResp.status != 204 && delResp.status != 200) {
-            error "[Amazon] Failed to delete existing edit (HTTP ${delResp.status}): ${delResp.body}"
-        }
-        echo "[EDIT] Deleted"
+    if (status != 0) {
+        error "[Amazon] Upload failed (exit code ${status})"
     }
 
-    // Step 3: Create fresh edit
-    echo "[EDIT] Creating new edit..."
-    def newEditResp = amazonApiRequest("${apiBase}/edits", 'POST', token)
-    if (newEditResp.status != 200 || !newEditResp.json?.id) {
-        error "[Amazon] Failed to create edit (HTTP ${newEditResp.status}): ${newEditResp.body}"
-    }
-    def editId = newEditResp.json.id
-    echo "[EDIT] Created edit: ${editId}"
-
-    // Step 4: List existing APKs to get the ID to replace
-    def apksResp = amazonApiRequest("${apiBase}/edits/${editId}/apks", 'GET', token)
-    def apks = apksResp.json ?: []
-    if (!apks) {
-        error "[Amazon] No existing APKs in edit to replace"
-    }
-    def targetApk = apks[0]
-    echo "[REPLACE] Will replace ${targetApk.name} (${targetApk.id}, versionCode: ${targetApk.versionCode})"
-
-    // Step 5: Get ETag for the target APK
-    def apkInfoResp = amazonApiRequest("${apiBase}/edits/${editId}/apks/${targetApk.id}", 'GET', token)
-    if (apkInfoResp.status != 200) {
-        error "[Amazon] Failed to get APK ETag (HTTP ${apkInfoResp.status}): ${apkInfoResp.body}"
-    }
-    echo "[REPLACE] ETag: ${apkInfoResp.etag}"
-
-    // Step 6: Upload APK via PUT replace
-    echo "[REPLACE] Uploading ${new File(apkFile).name} (${sizeMB} MB)..."
-    def uploadResp = amazonApiUploadFile(
-        "${apiBase}/edits/${editId}/apks/${targetApk.id}/replace",
-        token, apkFile, apkInfoResp.etag
-    )
-    if (uploadResp.status != 200) {
-        error "[Amazon] APK replace failed (HTTP ${uploadResp.status}): ${uploadResp.body}"
-    }
-    echo "[REPLACE] Success — APK ID: ${uploadResp.json?.id}, versionCode: ${uploadResp.json?.versionCode}, name: ${uploadResp.json?.name}"
-
-    // Step 7: List APKs after upload
-    def apksAfterResp = amazonApiRequest("${apiBase}/edits/${editId}/apks", 'GET', token)
-    (apksAfterResp.json ?: []).each { a ->
-        echo "[APKs] ${a.id} — versionCode: ${a.versionCode}, name: ${a.name}"
-    }
-
-    echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  DONE — Edit created and APK uploaded, NOT committed."
-    echo "  Check: https://developer.amazon.com/apps-and-games/console/app/${appId}"
-    echo "  Edit ID: ${editId}"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-}
-
-/**
- * Make an Amazon API request. Returns [status, body, json, etag].
- */
-private def amazonApiRequest(String urlStr, String method, String token, String body = null, String contentType = null, String ifMatch = null) {
-    def url = new URL(urlStr)
-    def conn = url.openConnection()
-    conn.setRequestMethod(method)
-    conn.setConnectTimeout(30000)
-    conn.setReadTimeout(60000)
-    if (token) conn.setRequestProperty('Authorization', "Bearer ${token}")
-    if (contentType) conn.setRequestProperty('Content-Type', contentType)
-    if (ifMatch) conn.setRequestProperty('If-Match', ifMatch)
-
-    if (body) {
-        conn.setDoOutput(true)
-        conn.getOutputStream().write(body.getBytes('UTF-8'))
-    }
-
-    def status = conn.getResponseCode()
-    def etag = conn.getHeaderField('ETag')
-    def responseBody = ''
-    try {
-        def stream = (status >= 400) ? conn.getErrorStream() : conn.getInputStream()
-        if (stream) responseBody = stream.getText('UTF-8')
-    } catch (Exception e) {
-        // No response body
-    }
-    conn.disconnect()
-
-    def json = null
-    if (responseBody) {
-        try { json = new groovy.json.JsonSlurper().parseText(responseBody) } catch (Exception e) {}
-    }
-    return [status: status, body: responseBody, json: json, etag: etag]
-}
-
-/**
- * Upload a file via PUT to the Amazon API (APK replace).
- */
-private def amazonApiUploadFile(String urlStr, String token, String filePath, String ifMatch) {
-    def file = new File(filePath)
-    def url = new URL(urlStr)
-    def conn = url.openConnection()
-    conn.setRequestMethod('PUT')
-    conn.setConnectTimeout(30000)
-    conn.setReadTimeout(600000)  // 10 min for large APK uploads
-    conn.setRequestProperty('Authorization', "Bearer ${token}")
-    conn.setRequestProperty('Content-Type', 'application/vnd.android.package-archive')
-    conn.setRequestProperty('Content-Length', String.valueOf(file.length()))
-    if (ifMatch) conn.setRequestProperty('If-Match', ifMatch)
-    conn.setDoOutput(true)
-    conn.setFixedLengthStreamingMode(file.length())
-
-    // Stream file to connection
-    def os = conn.getOutputStream()
-    def is = new FileInputStream(file)
-    def buf = new byte[65536]
-    def totalSent = 0L
-    def lastPct = -1
-    int n
-    while ((n = is.read(buf)) != -1) {
-        os.write(buf, 0, n)
-        totalSent += n
-        def pct = (int)((totalSent * 100) / file.length())
-        if (pct != lastPct && pct % 10 == 0) {
-            echo "[UPLOAD] ${String.format("%.1f", totalSent / (1024.0 * 1024.0))} / ${String.format("%.1f", file.length() / (1024.0 * 1024.0))} MB (${pct}%)"
-            lastPct = pct
-        }
-    }
-    is.close()
-    os.close()
-
-    def status = conn.getResponseCode()
-    def etag = conn.getHeaderField('ETag')
-    def responseBody = ''
-    try {
-        def stream = (status >= 400) ? conn.getErrorStream() : conn.getInputStream()
-        if (stream) responseBody = stream.getText('UTF-8')
-    } catch (Exception e) {}
-    conn.disconnect()
-
-    def json = null
-    if (responseBody) {
-        try { json = new groovy.json.JsonSlurper().parseText(responseBody) } catch (Exception e) {}
-    }
-    return [status: status, body: responseBody, json: json, etag: etag]
+    echo "[Amazon] Upload complete — check Amazon Developer Console to review and commit"
 }
 
 // ============================================================================
