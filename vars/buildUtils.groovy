@@ -206,8 +206,11 @@ def init(Map config = [:]) {
         def platformContent = libraryResource(platformScript)
         platform = evaluate(platformContent)
         platform.init(common)
-        // Auto-version preflight cache from script content — any code change invalidates
-        platform.PREFLIGHT_VERSION = String.valueOf(Math.abs(platformContent.hashCode()))
+        // Auto-version preflight cache from library content — any code change invalidates.
+        // Hash platform + common so preflight reruns when any library file changes.
+        def commonContent = libraryResource('groovy/common.groovy')
+        def combinedHash = Math.abs((platformContent + commonContent).hashCode())
+        platform.PREFLIGHT_VERSION = String.valueOf(combinedHash)
         env.PREFLIGHT_VERSION = platform.PREFLIGHT_VERSION
         common.platformModule = platform
 
