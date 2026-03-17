@@ -1,5 +1,5 @@
 #
-# Amazon App Submission API -- Upload APK, commit edit, submit to Live App Testing
+# Amazon App Submission API -- Upload APK (does not commit or go live)
 #
 # Usage: powershell -File amazon_upload.ps1 <apk-path>
 #
@@ -182,27 +182,9 @@ $uploadJson = $null
 try { $uploadJson = $uploadResp.Content | ConvertFrom-Json } catch {}
 Log "REPLACE" "Success -- versionCode: $($uploadJson.versionCode), name: $($uploadJson.name)"
 
-# --- Step 7: Commit the Edit ---
-Log "COMMIT" "Committing edit $editId..."
+# Edit is NOT committed — committing submits for production review.
+# Instead, submit to Live App Testing (default_group) from the Developer Console:
+#   https://developer.amazon.com/apps-and-games/console/app/$APP_ID
+# LAT has no REST API so this step must be done manually.
 
-# Get fresh ETag for the edit before committing
-$editInfoResp = Amazon-Request -Url "$API_BASE/edits/$editId" -Method "GET" -Token $token
-$editETag = $editInfoResp.ETag
-if (-not $editETag) {
-    # Fall back to the ETag from the create response
-    $editETag = $newEditResp.ETag
-}
-
-$commitResp = Amazon-Request -Url "$API_BASE/edits/$editId/commit" -Method "POST" -Token $token -IfMatch $editETag
-if ($commitResp.Status -ne 200) {
-    Log "COMMIT" "WARNING: Commit failed (HTTP $($commitResp.Status)): $($commitResp.Body)"
-    Log "COMMIT" "Edit $editId was created and APK uploaded but NOT committed"
-    Log "COMMIT" "Check: https://developer.amazon.com/apps-and-games/console/app/$APP_ID"
-    exit 1
-}
-Log "COMMIT" "Edit committed (status: $($commitResp.Json.status))"
-
-# NOTE: LAT (Live App Testing) has no REST API — distributing to the default_group
-# must be done from the Developer Console after this script commits the edit.
-
-Log "DONE" "Edit $editId committed -- start LAT from https://developer.amazon.com/apps-and-games/console/app/$APP_ID"
+Log "DONE" "APK uploaded to edit $editId -- submit to LAT from https://developer.amazon.com/apps-and-games/console/app/$APP_ID"
