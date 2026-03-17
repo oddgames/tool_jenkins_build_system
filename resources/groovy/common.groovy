@@ -658,7 +658,7 @@ def sendSlackBuildNotification(Map config) {
     // OS icons for platforms where store icon differs from OS (e.g. Steam builds)
     def osIcons = [
         StandaloneWindows64: 'https://img.icons8.com/fluency/48/windows-11.png',
-        StandaloneLinux64: 'https://img.icons8.com/fluency/48/linux.png'
+        StandaloneLinux64: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/linux.png'
     ]
     def storeIcon = storeIcons[platform] ?: storeIcons['Android']
     def osIcon = osIcons[platform]
