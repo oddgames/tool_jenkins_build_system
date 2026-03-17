@@ -1,5 +1,5 @@
 #
-# Amazon App Submission API -- Upload APK (no commit)
+# Amazon App Submission API -- Upload APK, commit edit, submit to Live App Testing
 #
 # Usage: powershell -File amazon_upload.ps1 <apk-path>
 #
@@ -180,19 +180,37 @@ try {
 
 $uploadJson = $null
 try { $uploadJson = $uploadResp.Content | ConvertFrom-Json } catch {}
-Log "REPLACE" "Success -- APK ID: $($uploadJson.id), versionCode: $($uploadJson.versionCode), name: $($uploadJson.name)"
+Log "REPLACE" "Success -- versionCode: $($uploadJson.versionCode), name: $($uploadJson.name)"
 
-# --- Step 7: List APKs After Upload ---
-$apksAfterResp = Amazon-Request -Url "$API_BASE/edits/$editId/apks" -Method "GET" -Token $token
-if ($apksAfterResp.Json) {
-    foreach ($a in $apksAfterResp.Json) {
-        Log "APKs" "$($a.id) -- versionCode: $($a.versionCode), name: $($a.name)"
-    }
+# --- Step 7: Commit the Edit ---
+Log "COMMIT" "Committing edit $editId..."
+
+# Get fresh ETag for the edit before committing
+$editInfoResp = Amazon-Request -Url "$API_BASE/edits/$editId" -Method "GET" -Token $token
+$editETag = $editInfoResp.ETag
+if (-not $editETag) {
+    # Fall back to the ETag from the create response
+    $editETag = $newEditResp.ETag
 }
 
-Write-Host ""
-Write-Host ("=" * 64)
-Write-Host "  DONE -- Edit created and APK uploaded, NOT committed."
-Write-Host "  Check: https://developer.amazon.com/apps-and-games/console/app/$APP_ID"
-Write-Host "  Edit ID: $editId"
-Write-Host ("=" * 64)
+$commitResp = Amazon-Request -Url "$API_BASE/edits/$editId/commit" -Method "POST" -Token $token -IfMatch $editETag
+if ($commitResp.Status -ne 200) {
+    Log "COMMIT" "WARNING: Commit failed (HTTP $($commitResp.Status)): $($commitResp.Body)"
+    Log "COMMIT" "Edit $editId was created and APK uploaded but NOT committed"
+    Log "COMMIT" "Check: https://developer.amazon.com/apps-and-games/console/app/$APP_ID"
+    exit 1
+}
+Log "COMMIT" "Edit committed (status: $($commitResp.Json.status))"
+
+# --- Step 8: Submit to Live App Testing ---
+Log "LAT" "Submitting to Live App Testing..."
+$latResp = Amazon-Request -Url "$API_BASE/edits/$editId/lat" -Method "PUT" -Token $token
+if ($latResp.Status -eq 200) {
+    Log "LAT" "Submitted to Live App Testing (status: $($latResp.Json.status))"
+} else {
+    # LAT submission is best-effort -- may not be enabled for this app
+    Log "LAT" "Could not submit to LAT (HTTP $($latResp.Status)): $($latResp.Body)"
+    Log "LAT" "Edit was committed successfully -- submit to LAT manually if needed"
+}
+
+Log "DONE" "Edit $editId committed -- https://developer.amazon.com/apps-and-games/console/app/$APP_ID"
