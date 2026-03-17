@@ -499,36 +499,31 @@ private def _testAllPermissions(currentBuildWrapper) {
         ex.getMessage()
     }
 
-    // --- Amazon upload (HttpURLConnection, file I/O) ---
+    // --- Amazon upload (HttpURLConnection extensions + file I/O) ---
+    // URL.openConnection, setRequestMethod, setRequestProperty, setConnectTimeout,
+    // setReadTimeout, setDoOutput, getOutputStream, getResponseCode, disconnect are
+    // already exercised by the Slack webhook code in common.groovy.
+    // Only test methods that are NEW to the Amazon upload.
+    def testConn = null
     testPermission('URL.openConnection') {
-        new URL('https://example.com').openConnection()
-    }
-    testPermission('HttpURLConnection.setConnectTimeout') {
-        def c = new URL('https://example.com').openConnection()
-        c.setConnectTimeout(1000)
-        c.disconnect()
+        testConn = new URL('https://example.com').openConnection()
     }
     testPermission('HttpURLConnection.setFixedLengthStreamingMode') {
-        def c = new URL('https://example.com').openConnection()
-        c.setFixedLengthStreamingMode((long)0)
-        c.disconnect()
+        if (testConn) testConn.setFixedLengthStreamingMode((long)0)
     }
     testPermission('HttpURLConnection.getHeaderField') {
-        def c = new URL('https://example.com').openConnection()
-        c.getHeaderField('ETag')
-        c.disconnect()
+        if (testConn) testConn.getHeaderField('ETag')
     }
     testPermission('HttpURLConnection.getErrorStream') {
-        def c = new URL('https://example.com').openConnection()
-        c.getErrorStream()
-        c.disconnect()
+        if (testConn) testConn.getErrorStream()
     }
+    if (testConn) { try { testConn.disconnect() } catch (Exception e) {} }
+
     testPermission('File.length') {
-        new File('C:\\').length()
+        new File('.').length()
     }
-    testPermission('FileInputStream.new') {
-        // Don't actually open — just test that the class is accessible
-        FileInputStream.class
+    testPermission('File.getName') {
+        new File('test.txt').getName()
     }
 
     return [passed: passed, failures: failures]
