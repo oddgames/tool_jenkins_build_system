@@ -120,45 +120,14 @@ public static BuildOptions GetBuildOptions()
         private static void UseEmbeddedAndroidTools()
         {
 #if UNITY_ANDROID
-            // Point Unity at its bundled JDK/SDK/NDK ("Installed with Unity").
-            // Only override if the bundled tools exist — otherwise leave the editor
-            // preferences untouched so any manually-configured paths are preserved.
+            // Always force Unity to use its bundled JDK, SDK, NDK ("Installed with Unity").
+            // Setting to null = embedded. If the module isn't installed, verifyAndroidJdk()
+            // in the preflight stage will have already failed the build before we get here.
             // See: https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Android.AndroidExternalToolsSettings-jdkRootPath.html
-            string unityEditorPath = Path.GetDirectoryName(UnityEditor.EditorApplication.applicationPath);
-            string playbackEngines = Path.Combine(unityEditorPath, "Data", "PlaybackEngines", "AndroidPlayer");
-
-            string bundledJdkPath = Path.Combine(playbackEngines, "OpenJDK");
-            if (Directory.Exists(bundledJdkPath))
-            {
-                AndroidExternalToolsSettings.jdkRootPath = null;
-                Log($"✓ JDK set to embedded ({bundledJdkPath})");
-            }
-            else
-            {
-                Log($"⚠ Bundled OpenJDK not found at {bundledJdkPath} — keeping existing JDK preference: '{AndroidExternalToolsSettings.jdkRootPath}'");
-            }
-
-            string bundledSdkPath = Path.Combine(playbackEngines, "SDK");
-            if (Directory.Exists(bundledSdkPath))
-            {
-                AndroidExternalToolsSettings.sdkRootPath = null;
-                Log($"✓ SDK set to embedded ({bundledSdkPath})");
-            }
-            else
-            {
-                Log($"⚠ Bundled SDK not found — keeping existing SDK preference: '{AndroidExternalToolsSettings.sdkRootPath}'");
-            }
-
-            string bundledNdkPath = Path.Combine(playbackEngines, "NDK");
-            if (Directory.Exists(bundledNdkPath))
-            {
-                AndroidExternalToolsSettings.ndkRootPath = null;
-                Log($"✓ NDK set to embedded ({bundledNdkPath})");
-            }
-            else
-            {
-                Log($"⚠ Bundled NDK not found — keeping existing NDK preference: '{AndroidExternalToolsSettings.ndkRootPath}'");
-            }
+            AndroidExternalToolsSettings.jdkRootPath = null;
+            AndroidExternalToolsSettings.sdkRootPath = null;
+            AndroidExternalToolsSettings.ndkRootPath = null;
+            Log("✓ Android external tools set to embedded (JDK, SDK, NDK)");
 #endif
         }
 
