@@ -1731,14 +1731,16 @@ def acceptAndroidSdkLicenses() {
         return
     }
 
+    // Always use Unity's bundled JDK for sdkmanager — system JDKs (e.g. JDK 21) are
+    // incompatible with Android SDK tools (removed javax.xml.bind causes NoClassDefFoundError).
     def javaHome = ''
     if (env.UNITY_VERSION) {
         def unityJdk = "${getPlaybackEnginesPath(env.UNITY_VERSION)}\\AndroidPlayer\\OpenJDK"
         def jdkExists = bat(script: "@if exist \"${unityJdk}\\bin\\java.exe\" echo found", returnStdout: true).trim()
         if (jdkExists == 'found') {
             javaHome = unityJdk
-        } else if (env.JAVA_HOME) {
-            javaHome = env.JAVA_HOME
+        } else {
+            echo "[WARN] Unity bundled JDK not found at ${unityJdk} — sdkmanager may fail"
         }
     }
 
@@ -4071,17 +4073,14 @@ def verifyAndroidJdk(String playbackEngines) {
     if (exists == 'found') {
         echo "[OK] Android OpenJDK installed successfully"
     } else {
-        // Set JAVA_HOME to system JDK as last resort
-        def systemJava = bat(script: '@where java 2>nul', returnStdout: true).trim()
-        if (systemJava) {
-            def javaDir = systemJava.split('\n')[0].trim().replaceAll('\\\\bin\\\\java\\.exe$', '')
-            env.JAVA_HOME = javaDir
-            echo "[WARN] Android OpenJDK missing — falling back to system JDK: ${javaDir}"
-        } else {
-            error "[ERROR] Android OpenJDK is not installed and no system JDK found.\n" +
-                  "Install manually: \"Unity Hub.exe\" -- --headless install-modules -v ${env.UNITY_VERSION} -m <jdk-module-id> -cm\n" +
-                  "Or install a system JDK: winget install Microsoft.OpenJDK.17"
-        }
+        // Do NOT fall back to system JDK — Unity requires the exact JDK version that shipped
+        // with the editor (e.g. 17.0.9). A system JDK 21 will cause "Incompatible Java version"
+        // and sdkmanager will fail with NoClassDefFoundError (javax.xml.bind removed in JDK 11+).
+        error "[ERROR] Android OpenJDK is not installed and could not be auto-installed.\n" +
+              "The Unity bundled JDK is required — system JDKs are incompatible.\n" +
+              "Install manually on the build agent:\n" +
+              "  \"Unity Hub.exe\" -- --headless install-modules -v ${env.UNITY_VERSION} -m <jdk-module-id> -cm\n" +
+              "Run with just 'android-open-jdk' to see the correct versioned module ID."
     }
 }
 
