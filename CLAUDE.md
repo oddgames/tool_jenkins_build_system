@@ -100,6 +100,8 @@ Gemini error analysis uses **Ruby** (not Python). Any jenkinsfile with `gemini-a
 - Takes ~20 seconds to respond — must wait, any input cancels the operation
 - Cannot test from Git Bash on Windows — bash mangles `--` arg separator. Use `cmd.exe` or Jenkins `bat` steps
 - Build agents: `C:\UnityEditors\` — Dev PC: `C:\Program Files\Unity\Hub\Editor\`
+- Commands: `editors`, `install-path`, `install`, `install-modules` — NO `details`, `list`, or `modules` command
+- **Unity 6 module IDs are versioned** (e.g. `android-open-jdk-17.0.9+9`), but `--headless help` still shows the old names (`android-open-jdk`). There is no command to query the real versioned IDs — the only way to discover them is from the "Did you mean" error when using the old name. `verifyAndroidJdk()` handles this automatically.
 
 ## Key Fixes Reference
 
