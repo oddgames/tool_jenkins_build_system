@@ -4404,6 +4404,23 @@ def runUnityCommand(Map config) {
             set "NINTENDO_SDK_HTC_GENERATION=2"
             echo [INFO] NINTENDO_SDK_ROOT=%NINTENDO_SDK_ROOT%
             echo [INFO] NINTENDO_SDK_HTC_GENERATION=2
+            if defined DOTNET_ROOT (
+                echo [INFO] DOTNET_ROOT=%DOTNET_ROOT%
+            ) else (
+                if exist "C:\\Program Files\\dotnet\\dotnet.exe" (
+                    set "DOTNET_ROOT=C:\\Program Files\\dotnet"
+                    echo [INFO] DOTNET_ROOT set to C:\\Program Files\\dotnet
+                ) else (
+                    echo [INFO] .NET SDK not found - installing via winget...
+                    winget install --id Microsoft.DotNet.SDK.8 --scope machine --silent --accept-source-agreements --accept-package-agreements
+                    if exist "C:\\Program Files\\dotnet\\dotnet.exe" (
+                        set "DOTNET_ROOT=C:\\Program Files\\dotnet"
+                        echo [OK] .NET SDK 8 installed, DOTNET_ROOT set
+                    ) else (
+                        echo [ERROR] .NET SDK installation failed - Switch IL2CPP build will likely fail
+                    )
+                )
+            )
         """
     }
 
