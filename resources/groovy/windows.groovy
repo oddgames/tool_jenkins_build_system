@@ -3801,8 +3801,8 @@ def validateUnityInstallation() {
     bat(script: "@netsh advfirewall firewall add rule name=\"Unity ${env.UNITY_VERSION}\" dir=in action=allow program=\"${unityExe}\" enable=yes profile=any >nul 2>&1", returnStatus: true)
 
     // Log PlaybackEngines contents for diagnostics
-    def playbackEngines = getPlaybackEnginesPath(env.UNITY_VERSION)
     try {
+        def playbackEngines = getPlaybackEnginesPath(env.UNITY_VERSION)
         def peContents = bat(script: """
             @echo off
             dir /b "${playbackEngines}" 2>&1
