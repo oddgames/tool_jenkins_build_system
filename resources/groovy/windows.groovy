@@ -1245,17 +1245,30 @@ def getRequiredUnityModules(String platform) {
  */
 def getPlaybackEnginesPath(String version) {
     def basePath = "C:\\UnityEditors\\${version}"
-    // Unity 6+ layout: Editor\Data\PlaybackEngines
+    // Unity 6+ layout: Editor\Data\PlaybackEngines (Unity 6000.x+)
     def newPath = "${basePath}\\Editor\\Data\\PlaybackEngines"
-    def exists = bat(script: "@if exist \"${newPath}\" echo found", returnStdout: true).trim()
-    if (exists == 'found') {
-        echo "[INFO] PlaybackEngines path (Unity 6+ layout): ${newPath}"
-        return newPath
-    }
-    // Legacy layout: PlaybackEngines
+    // Legacy layout: PlaybackEngines (Unity 2019-2023)
     def legacyPath = "${basePath}\\PlaybackEngines"
-    echo "[INFO] PlaybackEngines path (legacy layout): ${legacyPath}"
-    return legacyPath
+
+    try {
+        def exists = bat(script: "@if exist \"${newPath}\" echo found", returnStdout: true).trim()
+        if (exists == 'found') {
+            echo "[INFO] PlaybackEngines path (Unity 6+ layout): ${newPath}"
+            return newPath
+        }
+        echo "[INFO] PlaybackEngines path (legacy layout): ${legacyPath}"
+        return legacyPath
+    } catch (Exception e) {
+        // Agent disconnect or similar — fall back to version-based detection
+        echo "[WARN] Could not probe PlaybackEngines path: ${e.message}"
+        def major = version.tokenize('.')[0]
+        if (major.isInteger() && major.toInteger() >= 6000) {
+            echo "[INFO] PlaybackEngines path (Unity 6+ assumed): ${newPath}"
+            return newPath
+        }
+        echo "[INFO] PlaybackEngines path (legacy assumed): ${legacyPath}"
+        return legacyPath
+    }
 }
 
 /**
@@ -3801,8 +3814,8 @@ def validateUnityInstallation() {
     bat(script: "@netsh advfirewall firewall add rule name=\"Unity ${env.UNITY_VERSION}\" dir=in action=allow program=\"${unityExe}\" enable=yes profile=any >nul 2>&1", returnStatus: true)
 
     // Log PlaybackEngines contents for diagnostics
+    def playbackEngines = getPlaybackEnginesPath(env.UNITY_VERSION)
     try {
-        def playbackEngines = getPlaybackEnginesPath(env.UNITY_VERSION)
         def peContents = bat(script: """
             @echo off
             dir /b "${playbackEngines}" 2>&1
