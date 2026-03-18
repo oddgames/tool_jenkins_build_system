@@ -3577,7 +3577,7 @@ def uploadToGoogleDrive(Map config) {
         }
     }
     if (fileLink) {
-        common.addShieldsBadge('file', 'ipa', 'brightgreen', fileLink)
+        common.addShieldsBadge('ipa', 'ipa', 'brightgreen', fileLink)
         env.GDRIVE_FILE_LINK = fileLink
     }
 

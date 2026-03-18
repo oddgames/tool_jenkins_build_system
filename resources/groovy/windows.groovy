@@ -5397,7 +5397,7 @@ exit /b 0""", returnStdout: true).trim()
     if (fileLink) {
         echo "[OK] GDrive file link: ${fileLink}"
         def badgeText = fileName.substring(fileName.lastIndexOf('.') + 1)
-        common.addShieldsBadge('file', badgeText, 'brightgreen', fileLink)
+        common.addShieldsBadge(badgeText, badgeText, 'brightgreen', fileLink)
         env.GDRIVE_FILE_LINK = fileLink
     } else {
         echo "[WARN] No GDrive file link generated - sidebar download link will be missing"
@@ -5412,7 +5412,7 @@ exit /b 0""", returnStdout: true).trim()
 
     // Switch builds may only have .nspd directories (no single .nsp file)
     if (!fileName && env.PLATFORM == 'Switch' && gdriveFolderLink) {
-        common.addShieldsBadge('file', 'nspd', 'brightgreen', gdriveFolderLink)
+        common.addShieldsBadge('nspd', 'nspd', 'brightgreen', gdriveFolderLink)
     }
 
     def fileType = fileName ? fileName.substring(fileName.lastIndexOf('.') + 1).toUpperCase() : 'APK'
