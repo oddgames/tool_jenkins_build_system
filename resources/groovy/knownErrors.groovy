@@ -20,7 +20,7 @@ def getPatterns() {
     return [
         [
             pattern: "contains '@' suffix",
-            explain: { msg -> "Workspace contains an '@' suffix — Jenkins created a duplicate workspace due to a workspace path collision (e.g. customWorkspace matching the default) or a concurrent build." },
+            explain: { msg -> "Workspace contains an '@' suffix - Jenkins created a duplicate workspace due to a workspace path collision (e.g. customWorkspace matching the default) or a concurrent build." },
             fix: "Remove customWorkspace from the agent block if it matches the default path. If concurrent builds are the cause, enable 'Do not allow concurrent builds' in the job config."
         ],
         [
@@ -46,10 +46,11 @@ def getPatterns() {
         [
             pattern: 'was marked offline',
             explain: { msg ->
-                def agent = (msg =~ /for (\w+);/)?[0]?[1] ?: 'unknown'
-                "Build agent '${agent}' went offline during the build — the network connection between Jenkins and the agent was lost."
+                def m = (msg =~ /for (\w+);/)
+                def agent = m.find() ? m.group(1) : 'unknown'
+                "Build agent '${agent}' went offline - the network connection between Jenkins and the agent was lost."
             },
-            fix: 'Check the build agent\'s network connection, JNLP service, and system resources. Restart the agent if needed and re-run the build.'
+            fix: 'Check the build agent network connection, JNLP service, and system resources. Restart the agent if needed and re-run the build.'
         ],
         [
             pattern: 'Connection was broken',
