@@ -197,6 +197,10 @@ public static void Build(string outputPath, BuildOptions options)
 
             try
             {
+                // Ensure embedded Android tools are set for every Unity invocation
+                // (Prepare and Build run as separate processes — EditorPrefs may not persist in batchmode)
+                UseEmbeddedAndroidTools();
+
                 // Update version data before building so it's included in the build
                 UpdateVersionData();
 
