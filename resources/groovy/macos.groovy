@@ -3405,7 +3405,10 @@ def plasticCheckout(Map config) {
         }
     }
 
-    // 2. Switch to desired changeset or branch
+    // 2. Undo any pending changes left from a previous build (prevents switch failure)
+    sh "cd '${wsDir}' && cm undo . -r"
+
+    // 3. Switch to desired changeset or branch
     if (changeset) {
         echo "[Checkout] Switching to changeset ${changeset}"
         sh "cd '${wsDir}' && cm switch cs:${changeset} --noinput"
@@ -3416,7 +3419,7 @@ def plasticCheckout(Map config) {
         error "[Checkout] Either 'branch' or 'changeset' must be specified"
     }
 
-    // 3. Get loaded changeset ID from workspace status
+    // 4. Get loaded changeset ID from workspace status
     //    cm status --header --machinereadable returns: STATUS <csId> <repo> <server>
     def statusOutput = sh(
         script: "cd '${wsDir}' && cm status --header --machinereadable",
@@ -3426,7 +3429,7 @@ def plasticCheckout(Map config) {
     def csId = statusParts.length > 1 ? statusParts[1] : null
     if (!csId) error "[Checkout] Could not determine loaded changeset from: ${statusOutput}"
 
-    // 4. Query changeset details (branch, author, GUID)
+    // 5. Query changeset details (branch, author, GUID)
     def csInfo = sh(
         script: """cm find changeset "where changesetid=${csId}" --format="{changesetid}#{branch}#{owner}#{guid}" --nototal on repository "'${repSpec}'" """,
         returnStdout: true
