@@ -43,6 +43,34 @@ def getPatterns() {
             pattern: 'not installed',
             fix: 'Install the missing tool on the build agent, or check that it is on the PATH.'
         ],
+        [
+            pattern: 'was marked offline',
+            explain: { msg ->
+                def agent = (msg =~ /for (\w+);/)?[0]?[1] ?: 'unknown'
+                "Build agent '${agent}' went offline during the build — the network connection between Jenkins and the agent was lost."
+            },
+            fix: 'Check the build agent\'s network connection, JNLP service, and system resources. Restart the agent if needed and re-run the build.'
+        ],
+        [
+            pattern: 'Connection was broken',
+            explain: { msg -> "Jenkins lost connection to the build agent mid-build." },
+            fix: 'Check the build agent\'s network stability and JNLP connection. Restart the agent and re-run the build.'
+        ],
+        [
+            pattern: 'AgentOfflineException',
+            explain: { msg -> "Build agent went offline unexpectedly during the build." },
+            fix: 'Check the build agent\'s network connection and JNLP service. Restart the agent and re-run the build.'
+        ],
+        [
+            pattern: 'java.nio.channels.ClosedChannelException',
+            explain: { msg -> "Communication channel to the build agent was closed unexpectedly." },
+            fix: 'The agent connection dropped. Check agent network stability, restart the agent, and re-run the build.'
+        ],
+        [
+            pattern: 'ChannelClosedException',
+            explain: { msg -> "Jenkins remoting channel to the build agent was closed." },
+            fix: 'The agent disconnected. Check agent logs, network stability, and restart the agent.'
+        ],
     ]
 }
 

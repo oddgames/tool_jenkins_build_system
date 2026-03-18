@@ -6099,9 +6099,10 @@ require "json"
 require "net/http"
 require "uri"
 
-MODEL = "gemini-3-flash-preview"
 API_KEY = ARGV[0]
-MAX_TURNS = 3  # Max back-and-forth turns if AI requests more context
+IS_INFRA_FAILURE = ARGV[1] == "true"
+MODEL = IS_INFRA_FAILURE ? "gemini-2.0-flash-lite" : "gemini-2.0-flash"
+MAX_LOG_LINES = IS_INFRA_FAILURE ? 1000 : 2000
 
 # Read and filter the log to remove noisy progress lines
 raw_log = File.read("console_log.txt", mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
@@ -6170,6 +6171,26 @@ all_filtered_lines = raw_log.lines.reject do |line|
   noise_patterns.any? { |pattern| line.strip.match?(pattern) }
 end
 
+# Deduplicate consecutive repeated lines (e.g. stack traces, repeated warnings)
+# Keeps first occurrence + a "[repeated N more times]" marker
+deduped_lines = []
+repeat_count = 0
+all_filtered_lines.each do |line|
+  if deduped_lines.last == line
+    repeat_count += 1
+  else
+    if repeat_count > 0
+      deduped_lines << "  [repeated #{repeat_count} more time#{'s' if repeat_count > 1}]\n"
+      repeat_count = 0
+    end
+    deduped_lines << line
+  end
+end
+if repeat_count > 0
+  deduped_lines << "  [repeated #{repeat_count} more time#{'s' if repeat_count > 1}]\n"
+end
+all_filtered_lines = deduped_lines
+
 prompt = File.read("gemini_prompt.txt", mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
 
 response_schema = {
@@ -6190,66 +6211,34 @@ response_schema = {
       },
       description: "ALL errors found in the log, sorted by severity (CRITICAL first). Include: \'error CS\', \'Error:\', \'ERROR:\', \'Exception\', \'Failed\', \'FAILED\', \'fatal\', \'Duplicate class\', \'Build FAILED\', stack traces. Copy each error exactly as it appears."
     },
-    need_more_context: { type: "boolean", description: "Set to true ONLY if you cannot identify any root cause from the provided log and need to see earlier log lines. If you found at least one error, set to false." },
-    context_request: { type: "string", description: "If need_more_context is true, explain what you are looking for (e.g. \'Need to see earlier build output to find the compilation error that caused the failure\')." }
   },
-  required: ["explanation", "errors", "need_more_context"]
+  required: ["explanation", "errors"]
 }
 
-# Start with last 5000 lines, expand if AI requests more
-lines_to_send = 5000
-lines_already_sent = 0
-conversation = []
+# Single-pass analysis — send last N filtered lines
+log_slice = all_filtered_lines.last(MAX_LOG_LINES).join
+STDERR.puts "[INFO] Model: #{MODEL} | Sending #{[MAX_LOG_LINES, all_filtered_lines.size].min} of #{all_filtered_lines.size} filtered lines"
+
+body = {
+  contents: [{role: "user", parts: [{text: prompt}, {text: log_slice}]}],
+  generationConfig: {
+    responseMimeType: "application/json",
+    responseSchema: response_schema
+  }
+}.to_json
+
+uri = URI("https://generativelanguage.googleapis.com/v1beta/models/#{MODEL}:generateContent?key=#{API_KEY}")
+http = Net::HTTP.new(uri.host, uri.port)
+http.use_ssl = true
+http.open_timeout = 30
+http.read_timeout = 60
+req = Net::HTTP::Post.new(uri)
+req["Content-Type"] = "application/json"
+req.body = body
+
 final_data = nil
-prev_response_raw = nil
-
-MAX_TURNS.times do |turn|
-  # Determine which lines to send
-  if turn == 0
-    log_slice = all_filtered_lines.last(lines_to_send).join
-    conversation = [{role: "user", parts: [{text: prompt}, {text: log_slice}]}]
-    lines_already_sent = [lines_to_send, all_filtered_lines.size].min
-  else
-    # Send earlier lines the AI hasn\'t seen yet
-    remaining = all_filtered_lines.size - lines_already_sent
-    break if remaining <= 0  # No more log to send
-
-    extra_lines = [3000, remaining].min
-    start_idx = all_filtered_lines.size - lines_already_sent - extra_lines
-    start_idx = 0 if start_idx < 0
-    end_idx = all_filtered_lines.size - lines_already_sent
-    earlier_log = all_filtered_lines[start_idx...end_idx].join
-    lines_already_sent += extra_lines
-
-    # Add AI\'s previous response and our follow-up to conversation
-    conversation << {role: "model", parts: [{text: prev_response_raw}]}
-    conversation << {role: "user", parts: [{text: "Here are #{extra_lines} earlier log lines (before what you already saw). Analyze these for the root cause:\\n\\n#{earlier_log}"}]}
-  end
-
-  body = {
-    contents: conversation,
-    generationConfig: {
-      responseMimeType: "application/json",
-      responseSchema: response_schema
-    }
-  }.to_json
-
-  uri = URI("https://generativelanguage.googleapis.com/v1beta/models/#{MODEL}:generateContent?key=#{API_KEY}")
-  http = Net::HTTP.new(uri.host, uri.port)
-  http.use_ssl = true
-  http.open_timeout = 30
-  http.read_timeout = 60
-  req = Net::HTTP::Post.new(uri)
-  req["Content-Type"] = "application/json"
-  req.body = body
-
-  begin
-    resp = http.request(req)
-  rescue => e
-    STDERR.puts "HTTP error on turn #{turn + 1}: #{e.message}"
-    break
-  end
-
+begin
+  resp = http.request(req)
   result = JSON.parse(resp.body)
 
   unless result["candidates"] && result["candidates"][0]
@@ -6258,19 +6247,11 @@ MAX_TURNS.times do |turn|
     else
       STDERR.puts "Unexpected response: #{resp.body[0..200]}"
     end
-    break
+  else
+    final_data = JSON.parse(result["candidates"][0]["content"]["parts"][0]["text"])
   end
-
-  prev_response_raw = result["candidates"][0]["content"]["parts"][0]["text"]
-  final_data = JSON.parse(prev_response_raw)
-
-  # If AI doesn\'t need more context or we\'ve exhausted the log, we\'re done
-  unless final_data["need_more_context"] == true
-    STDERR.puts "[INFO] Analysis complete on turn #{turn + 1}" if turn > 0
-    break
-  end
-
-  STDERR.puts "[INFO] AI requested more context (turn #{turn + 1}): #{final_data["context_request"]}"
+rescue => e
+  STDERR.puts "HTTP error: #{e.message}"
 end
 
 # Output structured JSON for the Groovy layer to parse
@@ -6292,7 +6273,7 @@ end
             def analysisOutput = bat(
                 script: '''
                     @echo off
-                    ruby gemini_analyze.rb "%GEMINI_API_KEY%" 2>gemini_stderr.txt
+                    ruby gemini_analyze.rb "%GEMINI_API_KEY%" "${isEarlyFailure}" 2>gemini_stderr.txt
                 ''',
                 returnStdout: true
             ).trim()
