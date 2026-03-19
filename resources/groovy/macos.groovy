@@ -3685,6 +3685,155 @@ def uploadToTestFlight(Map config) {
 }
 
 // ============================================================================
+// CONSOLE LOG COLLECTION & FILTERING
+// ============================================================================
+
+/**
+ * Collect, filter, and archive the console log for failed builds.
+ * macOS version — uses sh instead of bat for external log appending.
+ */
+def collectFilteredConsoleLog() {
+    try {
+        def failureCause = ""
+        try {
+            def execution = currentBuild.rawBuild.getExecution()
+            if (execution) {
+                def causeOfFailure = execution.getCauseOfFailure()
+                if (causeOfFailure) {
+                    def sw = new StringWriter()
+                    causeOfFailure.printStackTrace(new PrintWriter(sw))
+                    failureCause = """
+=== ACTUAL BUILD FAILURE EXCEPTION ===
+${causeOfFailure.getClass().getName()}: ${causeOfFailure.getMessage()}
+
+Stack trace:
+${sw.toString()}
+=== END EXCEPTION ===
+
+"""
+                }
+            }
+        } catch (Exception ex) {
+            echo "[DEBUG] Could not get failure cause: ${ex.message}"
+        }
+
+        def failedStageName = env.FAILED_STAGE ?: null
+        def logContent = null
+        if (failedStageName) {
+            logContent = common.getStageLogsFromRawLog(failedStageName, 10000)
+        }
+        if (!logContent) {
+            def logLines = currentBuild.rawBuild.getLog(10000)
+            logContent = logLines.join('\n')
+        }
+        logContent = failureCause + logContent
+        writeFile file: 'console_log.txt', text: logContent
+
+        // Append external tool logs (e.g. xcodebuild_archive.log)
+        try {
+            if (env.ARTIFACT_PATH) {
+                sh """
+                    find "${env.ARTIFACT_PATH}" -maxdepth 1 -name "*.log" | sort | while IFS= read -r logfile; do
+                        printf '\\n\\n=== EXTERNAL LOG: %s ===\\n' "\$(basename "\$logfile")" >> console_log.txt
+                        cat "\$logfile" >> console_log.txt
+                    done
+                """
+            }
+        } catch (Exception ex) {
+            echo "[DEBUG] Could not append teed logs: ${ex.message}"
+        }
+
+        // Filter noise and deduplicate via Ruby script
+        def filterScript = '''
+require "json"
+
+MAX_LOG_LINES = 2000
+
+raw_log = File.read("console_log.txt", mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
+
+noise_patterns = [
+  /^Processing \\d+% \\(\\d+\\/\\d+\\)/,
+  /^DisplayProgressbar:/,
+  /^Compiling shader /,
+  /^\\s+Full variant space:/,
+  /^\\s+After settings filtering:/,
+  /^\\s+After built-in stripping:/,
+  /^\\s+After scriptable stripping:/,
+  /^\\s+Processed in \\d+\\.\\d+ seconds/,
+  /^\\s+starting compilation\\.\\.\\./,
+  /^\\s+finished in \\d+\\.\\d+ seconds\\./,
+  /^\\s+Prepared data for serialisation/,
+  /^Serialized binary data for shader/,
+  /^\\s+(gles|vulkan|metal)\\d* \\(total internal programs:/,
+  /^Assets[\\\\\\/][^\\:]+$/,
+  /^'.+' Manifest:$/,
+  /^Parsing manifest '/,
+  /^Add manifests to package '/,
+  /^name: .+ --> alias/,
+  /^jenkins_[a-f0-9]+#/,
+  /^sync_[a-z_]+#/,
+  /\\.bundle$/,
+  /^\\[Pipeline\\] (?:\\{|\\}|\\/\\/|echo|script|stage|withEnv|withCredentials|timeout|node|libraryResource|isUnix|bat|sh)$/,
+  /^\\s*$/,
+  /^[-=]{20,}$/,
+  /warning (?:CS|UDR|UNT)\\d+:/,
+  /^(?:Version Handler|External Dependency Manager|Resolving |Constraint )/,
+  /^(?:Opening scene|Unloading \\d+|Memory consumption)/,
+  /^\\s+(?:Deserialize|Integration|Thread Wait Time|Loaded Objects|Unused Serialized files):/,
+  /^(?:CompileC|CompileSwift|Ld|Touch|CpResource|CodeSign|ProcessInfoPlistFile|GenerateDSYMFile|PhaseScriptExecution) /,
+  /^    (?:\\/Applications\\/Xcode|cd |export |builtin-)/,
+  /^Shader warning in /,
+  /^file: Assets/,
+  /^Current files:$/,
+  /: editor enabled (?:True|False), build targets/,
+]
+
+filtered = raw_log.lines.reject { |line| noise_patterns.any? { |p| line.strip.match?(p) } }
+
+deduped = []
+repeat_count = 0
+filtered.each do |line|
+  if deduped.last == line
+    repeat_count += 1
+  else
+    if repeat_count > 0
+      deduped << "  [repeated #{repeat_count} more time#{'s' if repeat_count > 1}]\\n"
+      repeat_count = 0
+    end
+    deduped << line
+  end
+end
+deduped << "  [repeated #{repeat_count} more time#{'s' if repeat_count > 1}]\\n" if repeat_count > 0
+
+output = deduped.last(MAX_LOG_LINES).join
+File.write("console_log_filtered.txt", output)
+STDERR.puts "[INFO] Filtered #{filtered.size} -> #{deduped.size} lines (saved last #{[MAX_LOG_LINES, deduped.size].min})"
+'''
+        writeFile file: 'filter_log.rb', text: filterScript
+        sh script: 'ruby filter_log.rb 2>&1', returnStatus: true
+
+        def filteredLog = null
+        if (fileExists('console_log_filtered.txt')) {
+            filteredLog = readFile('console_log_filtered.txt')
+            if (env.ARTIFACT_PATH) {
+                writeFile file: "${env.ARTIFACT_PATH}/console_log.txt", text: filteredLog
+                echo "[OK] Archived filtered console log (${filteredLog.readLines().size()} lines)"
+            }
+        } else {
+            echo "[WARN] Log filtering failed - archiving unfiltered log"
+            if (env.ARTIFACT_PATH && fileExists('console_log.txt')) {
+                sh script: "cp console_log.txt '${env.ARTIFACT_PATH}/console_log.txt' 2>/dev/null", returnStatus: true
+            }
+        }
+
+        return filteredLog
+    } catch (Exception e) {
+        echo "[WARN] Console log collection failed: ${e.message}"
+        return null
+    }
+}
+
+// ============================================================================
 // GEMINI ANALYSIS
 // ============================================================================
 
@@ -3694,7 +3843,6 @@ def analyzeErrorsWithGemini(String platform, String buildType) {
         withCredentials([string(credentialsId: 'gemini-api-key', variable: 'GEMINI_API_KEY')]) {
             def stage = env.FAILED_STAGE ? " in stage '${env.FAILED_STAGE}'" : ""
 
-            // Determine if this is a pipeline/infrastructure failure or a Unity build failure
             def pipelineStages = ['Validate', 'Checkout', 'Startup', 'Preflight Checks', 'Setup', 'Extract Version', 'Validate Unity', 'Calculate Build Version']
             def isEarlyFailure = pipelineStages.contains(env.FAILED_STAGE) || !env.FAILED_STAGE
 
@@ -3758,59 +3906,8 @@ ${commonFixes}
 For each error you find, provide a specific actionable fix based on the known fixes above or your own knowledge."""
             }
 
-            // Try to get the actual exception that caused the build failure
-            def failureCause = ""
-            try {
-                def execution = currentBuild.rawBuild.getExecution()
-                if (execution) {
-                    def causeOfFailure = execution.getCauseOfFailure()
-                    if (causeOfFailure) {
-                        def sw = new StringWriter()
-                        causeOfFailure.printStackTrace(new PrintWriter(sw))
-                        failureCause = """
-=== ACTUAL BUILD FAILURE EXCEPTION ===
-${causeOfFailure.getClass().getName()}: ${causeOfFailure.getMessage()}
-
-Stack trace:
-${sw.toString()}
-=== END EXCEPTION ===
-
-"""
-                    }
-                }
-            } catch (Exception ex) {
-                echo "[DEBUG] Could not get failure cause: ${ex.message}"
-            }
-
-            // Extract failed stage logs from raw console log.
-            // Raw log includes more context (bat/sh headers, Jenkins step output) than the flow graph API.
-            def failedStageName = env.FAILED_STAGE ?: null
-            def logContent = null
-            if (failedStageName) {
-                logContent = common.getStageLogsFromRawLog(failedStageName, 10000)
-            }
-            if (!logContent) {
-                // Fallback: last 10000 lines from the full log
-                def logLines = currentBuild.rawBuild.getLog(10000)
-                logContent = logLines.join('\n')
-            }
-            logContent = failureCause + logContent
-            writeFile file: 'console_log.txt', text: logContent
-
-            // Append any teed log files from the artifact path (e.g. xcodebuild_archive.log)
-            // These contain raw tool output that may be filtered/absent from the Jenkins console log
-            try {
-                if (env.ARTIFACT_PATH) {
-                    sh """
-                        find "${env.ARTIFACT_PATH}" -maxdepth 1 -name "*.log" | sort | while IFS= read -r logfile; do
-                            printf '\\n\\n=== EXTERNAL LOG: %s ===\\n' "\$(basename "\$logfile")" >> console_log.txt
-                            cat "\$logfile" >> console_log.txt
-                        done
-                    """
-                }
-            } catch (Exception ex) {
-                echo "[DEBUG] Could not append teed logs: ${ex.message}"
-            }
+            // Read the pre-filtered console log (already archived by collectFilteredConsoleLog)
+            writeFile file: 'gemini_prompt.txt', text: prompt
 
             def rubyScript = '''
 require "json"
@@ -3822,98 +3919,14 @@ IS_INFRA_FAILURE = ARGV[1] == "true"
 MODEL = IS_INFRA_FAILURE ? "gemini-2.0-flash-lite" : "gemini-2.0-flash"
 MAX_LOG_LINES = IS_INFRA_FAILURE ? 1000 : 2000
 
-# Read and filter the log to remove noisy progress lines
-raw_log = File.read("console_log.txt", mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
-
-# Filter out noisy lines that add no diagnostic value
-# Only patterns that match 100+ lines are included
-noise_patterns = [
-  # Unity progress/status (~2500+ lines)
-  /^Processing \\d+% \\(\\d+\\/\\d+\\)/,           # Unity DataTool progress
-  /^DisplayProgressbar:/,                     # Unity progress bars
-
-  # Shader compilation noise (~12000+ lines per build)
-  /^Compiling shader /,                       # Shader compilation start
-  /^\\s+Full variant space:/,                  # Shader variant info
-  /^\\s+After settings filtering:/,
-  /^\\s+After built-in stripping:/,
-  /^\\s+After scriptable stripping:/,
-  /^\\s+Processed in \\d+\\.\\d+ seconds/,
-  /^\\s+starting compilation\\.\\.\\./,
-  /^\\s+finished in \\d+\\.\\d+ seconds\\./,
-  /^\\s+Prepared data for serialisation/,
-  /^Serialized binary data for shader/,
-  /^\\s+(gles|vulkan|metal)\\d* \\(total internal programs:/,
-
-  # Asset/manifest file listings (~40000+ lines)
-  /^Assets[\\\\\\/][^\\:]+$/,                      # Any Assets\\ line without a colon (file listing, not error)
-  /^'.+' Manifest:$/,
-  /^Parsing manifest '/,
-  /^Add manifests to package '/,
-  /^name: .+ --> alias/,
-
-  # Plastic SCM workspace listings (~100+ lines)
-  /^jenkins_[a-f0-9]+#/,                      # Workspace list entries
-  /^sync_[a-z_]+#/,                           # Sync workspace entries
-
-  # Bundle filenames (~600+ lines)
-  /\\.bundle$/,
-
-  # Pipeline markers (~400+ lines)
-  /^\\[Pipeline\\] (?:\\{|\\}|\\/\\/|echo|script|stage|withEnv|withCredentials|timeout|node|libraryResource|isUnix|bat|sh)$/,
-
-  # Empty/separator lines (~3000+ lines)
-  /^\\s*$/,
-  /^[-=]{20,}$/,
-
-  # Warnings (~2400+ lines - keep errors, filter warnings)
-  /warning (?:CS|UDR|UNT)\\d+:/,
-
-  # External Dependency Manager / Version Handler (~800+ lines)
-  /^(?:Version Handler|External Dependency Manager|Resolving |Constraint )/,
-
-  # Unity scene loading/unloading (~200+ lines)
-  /^(?:Opening scene|Unloading \\d+|Memory consumption)/,
-  /^\\s+(?:Deserialize|Integration|Thread Wait Time|Loaded Objects|Unused Serialized files):/,
-
-  # iOS/Xcode build output noise (~1000+ lines on iOS builds)
-  /^(?:CompileC|CompileSwift|Ld|Touch|CpResource|CodeSign|ProcessInfoPlistFile|GenerateDSYMFile|PhaseScriptExecution) /,
-  /^    (?:\\/Applications\\/Xcode|cd |export |builtin-)/,
-
-  # Shader warnings (~6000+ lines - different from shader compilation)
-  /^Shader warning in /,
-
-  # Version Handler file listings (~600+ lines)
-  /^file: Assets/,
-  /^Current files:$/,
-  /: editor enabled (?:True|False), build targets/,
-]
-
-all_filtered_lines = raw_log.lines.reject do |line|
-  noise_patterns.any? { |pattern| line.strip.match?(pattern) }
-end
-
-# Deduplicate consecutive repeated lines (e.g. stack traces, repeated warnings)
-# Keeps first occurrence + a "[repeated N more times]" marker
-deduped_lines = []
-repeat_count = 0
-all_filtered_lines.each do |line|
-  if deduped_lines.last == line
-    repeat_count += 1
-  else
-    if repeat_count > 0
-      deduped_lines << "  [repeated #{repeat_count} more time#{'s' if repeat_count > 1}]\n"
-      repeat_count = 0
-    end
-    deduped_lines << line
-  end
-end
-if repeat_count > 0
-  deduped_lines << "  [repeated #{repeat_count} more time#{'s' if repeat_count > 1}]\n"
-end
-all_filtered_lines = deduped_lines
+log_file = File.exist?("console_log_filtered.txt") ? "console_log_filtered.txt" : "console_log.txt"
+log_content = File.read(log_file, mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
+all_lines = log_content.lines
+log_slice = all_lines.last(MAX_LOG_LINES).join
 
 prompt = File.read("gemini_prompt.txt", mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
+
+STDERR.puts "[INFO] Model: #{MODEL} | Sending #{[MAX_LOG_LINES, all_lines.size].min} of #{all_lines.size} lines"
 
 response_schema = {
   type: "object",
@@ -3936,10 +3949,6 @@ response_schema = {
   },
   required: ["explanation", "errors"]
 }
-
-# Single-pass analysis — send last N filtered lines
-log_slice = all_filtered_lines.last(MAX_LOG_LINES).join
-STDERR.puts "[INFO] Model: #{MODEL} | Sending #{[MAX_LOG_LINES, all_filtered_lines.size].min} of #{all_filtered_lines.size} filtered lines"
 
 body = {
   contents: [{role: "user", parts: [{text: prompt}, {text: log_slice}]}],
@@ -3976,7 +3985,6 @@ rescue => e
   STDERR.puts "HTTP error: #{e.message}"
 end
 
-# Output structured JSON for the Groovy layer to parse
 if final_data
   output = {
     explanation: final_data["explanation"],
@@ -3990,7 +3998,6 @@ elsif !final_data
 end
 '''
             writeFile file: 'gemini_analyze.rb', text: rubyScript
-            writeFile file: 'gemini_prompt.txt', text: prompt
 
             // Run Ruby script - stdout is JSON, stderr goes to file for diagnostics
             def analysisOutput = sh(

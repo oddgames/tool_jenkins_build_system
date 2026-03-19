@@ -706,6 +706,12 @@ def sendSlackBuildNotification(Map config) {
         def fileUrl = "file:${env.LOCAL_BUILD_PATH.replace('\\', '/')}"
         links += " | <${fileUrl}|:open_file_folder: Local>"
     }
+    if (status == 'failure' || status == 'unstable') {
+        def dashUrl = env.DASHBOARD_URL ?: (env.WEBHOOK_URL ? env.WEBHOOK_URL.replaceAll('/api/.*', '') : null)
+        if (dashUrl) {
+            links += " | <${dashUrl}/#analyzer?job=${env.JOB_NAME}&build=${env.BUILD_NUMBER}|:mag: Analyze>"
+        }
+    }
 
     // Build upload status line from env vars (set by sendUploadNotification / updateUploadStatus)
     def uploadStatusLine = buildUploadStatusLine()
@@ -1289,6 +1295,7 @@ def notifyDashboard(String status, Map config = [:]) {
             payload.duration = currentBuild.duration
             if (env.GDRIVE_FILE_LINK) payload.downloadUrl = env.GDRIVE_FILE_LINK
             if (env.ERROR_ANALYSIS) payload.errorAnalysis = env.ERROR_ANALYSIS
+            if (env.FAILED_STAGE) payload.failedStage = env.FAILED_STAGE
         }
 
         def json = new groovy.json.JsonBuilder(payload).toString()
@@ -1403,17 +1410,32 @@ def finalizeBuild(Map config) {
     def channel = config?.channel ?: env.SLACK_CHANNEL ?: '#builds'
     def appIcon = config?.appIcon
 
-    // Step 1: AI analysis (optional - failure here must not prevent Slack)
-    // Skip AI if the error was already diagnosed (e.g. workspace conflict, missing env vars, tool not found)
+    // Step 1: Collect and archive filtered console log (always, for dashboard analyzer)
+    try {
+        platformModule?.collectFilteredConsoleLog()
+    } catch (Exception e) {
+        echo "[WARN] Console log collection failed: ${e.message}"
+    }
+
+    // Add Build Analyzer sidebar link for failed/unstable builds
+    try {
+        def dashUrl = env.DASHBOARD_URL ?: (env.WEBHOOK_URL ? env.WEBHOOK_URL.replaceAll('/api/.*', '') : null)
+        if (dashUrl) {
+            def analyzerUrl = "${dashUrl}/#analyzer?job=${env.JOB_NAME}&build=${env.BUILD_NUMBER}"
+            addSidebarLink(analyzerUrl, 'Build Analyzer', 'symbol-search-regular')
+        }
+    } catch (Exception e) {
+        // Non-critical — ignore
+    }
+
+    // Step 2: Error analysis — known patterns (free) or AI (opt-in via ENABLE_AI_ANALYSIS)
     def errorAnalysis = env.ERROR_ANALYSIS ?: null
-    if (!errorAnalysis && env.SKIP_AI_ANALYSIS != 'true') {
-        // Check if the failure message matches a known error pattern — skip AI for obvious failures
-        def skipAi = false
+    if (!errorAnalysis) {
+        // Check known error patterns first (no API cost)
         try {
             def failMsg = currentBuild.rawBuild.getExecution()?.getCauseOfFailure()?.getMessage() ?: ''
             def matched = knownErrors?.match(failMsg)
             if (matched) {
-                skipAi = true
                 def failedStage = env.FAILED_STAGE ?: env.CURRENT_STAGE ?: 'Unknown'
                 def errors = [[severity: 'ERROR', stage: failedStage, message: matched.explanation]]
                 if (matched.fix) errors[0].fix = matched.fix
@@ -1423,13 +1445,14 @@ def finalizeBuild(Map config) {
                     knownError: true
                 ]
                 errorAnalysis = new groovy.json.JsonBuilder(analysis).toString()
-                echo "[INFO] Known error pattern detected — skipping AI analysis"
+                echo "[INFO] Known error pattern detected"
             }
         } catch (Exception e) {
-            // Ignore — will fall through to AI analysis
+            // Ignore — will fall through
         }
 
-        if (!skipAi) {
+        // AI analysis only if explicitly enabled (default: off — use dashboard analyzer instead)
+        if (!errorAnalysis && env.ENABLE_AI_ANALYSIS == 'true') {
             try {
                 errorAnalysis = platformModule?.analyzeErrorsWithGemini(platform, buildType)
             } catch (Exception e) {

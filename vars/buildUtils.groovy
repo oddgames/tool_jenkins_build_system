@@ -486,6 +486,7 @@ def uploadToGCS(Map config) { platform.uploadToGCS(config) }
 def amazonUpload(Map config) { platform.amazonUpload(config) }
 def uploadToGooglePlay(Map config) { platform.uploadToGooglePlay(config) }
 def uploadCrashlyticsSymbols(Map config) { platform.uploadCrashlyticsSymbols(config) }
+def collectFilteredConsoleLog() { platform.collectFilteredConsoleLog() }
 def analyzeErrorsWithGemini(String plat, String buildType) { platform.analyzeErrorsWithGemini(plat, buildType) }
 def sendUploadNotification(Map config) { ensureInitialized(); common.sendUploadNotification(config) }
 def updateUploadStatus(String stage, String result) { ensureInitialized(); common.updateUploadStatus(stage, result) }
