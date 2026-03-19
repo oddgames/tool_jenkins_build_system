@@ -707,7 +707,7 @@ def sendSlackBuildNotification(Map config) {
         links += " | <${fileUrl}|:open_file_folder: Local>"
     }
     if (status == 'failure' || status == 'unstable') {
-        def dashUrl = env.DASHBOARD_URL ?: (env.WEBHOOK_URL ? env.WEBHOOK_URL.replaceAll('/api/.*', '') : null)
+        def dashUrl = env.DASHBOARD_URL ?: null
         if (dashUrl) {
             links += " | <${dashUrl}/#analyzer?job=${env.JOB_NAME}&build=${env.BUILD_NUMBER}|:mag: Analyze>"
         }
@@ -1419,7 +1419,7 @@ def finalizeBuild(Map config) {
 
     // Add Build Analyzer sidebar link for failed/unstable builds
     try {
-        def dashUrl = env.DASHBOARD_URL ?: (env.WEBHOOK_URL ? env.WEBHOOK_URL.replaceAll('/api/.*', '') : null)
+        def dashUrl = env.DASHBOARD_URL ?: null
         if (dashUrl) {
             def analyzerUrl = "${dashUrl}/#analyzer?job=${env.JOB_NAME}&build=${env.BUILD_NUMBER}"
             addSidebarLink(analyzerUrl, 'Build Analyzer', 'symbol-search-regular')
