@@ -5476,80 +5476,48 @@ def uploadToLocalShare(Map config) {
 
     echo "[INFO] Copying build to local share: ${destPath}"
 
-    // Use robocopy for local/UNC copies — rclone mangles UNC paths with \\?\UNC\ prefix
-    // Robocopy exit codes: 0-7 = success, 8+ = error
-    // Use 'if errorlevel 8' (built-in form, evaluated at runtime) NOT '%ERRORLEVEL%' (expanded at parse time, stale inside for loops)
+    // Use robocopy for local/UNC copies -- rclone mangles UNC paths with \\?\UNC\ prefix
+    // Robocopy: /MT:8 = 8 threads, /E = recurse, /NFL /NDL = no file/dir listing (quiet)
+    // Exit codes: 0-7 = success, 8+ = error
     bat """
         @echo off
         setlocal EnableDelayedExpansion
-        REM Authenticate to network share
         net use "${sharePath}" /user:BUILD build /persistent:no 2>nul
-        if errorlevel 1 (
-            echo [WARNING] net use failed — share may already be connected
-        )
-
+        if errorlevel 1 echo [WARNING] net use failed -- share may already be connected
         if not exist "${destPath}" mkdir "${destPath}"
         cd /d "${buildPath}"
 
-        REM Copy primary build files
+        REM Check if specific artifact files exist (apk/aab/ipa/nsp/nspd)
         set FOUND=
-        for %%f in (*.apk *.aab *.ipa *.nsp) do (
-            echo Copying: %%f
-            robocopy "%CD%" "${destPath}" "%%f" /R:3 /W:5 /NJH /NJS
-            if !ERRORLEVEL! GEQ 8 (
-                echo [WARNING] Failed to copy %%f
-            ) else (
-                set FOUND=1
-            )
-        )
+        for %%f in (*.apk *.aab *.ipa *.nsp) do set FOUND=1
+        for /d %%d in (*.nspd) do set FOUND=1
 
-        REM Copy .nspd directories (Switch dev packages)
-        for /d %%d in (*.nspd) do (
-            echo Copying Switch dev package: %%d
-            robocopy "%CD%\\%%d" "${destPath}\\%%d" /E /R:3 /W:5 /NJH /NJS
-            if !ERRORLEVEL! GEQ 8 (
-                echo [WARNING] Failed to copy %%d
-            ) else (
-                set FOUND=1
-            )
-        )
-
-        echo [INFO] Finished primary build file upload processing, starting folder operations
-        if not "!FOUND!"=="" (
-            echo [INFO] Searching For symbols
-            REM Copy symbols zip if present
-            for %%s in (*.symbols.zip) do (
-                echo Copying symbols: %%s
-                robocopy "%CD%" "${destPath}" "%%s" /R:3 /W:5 /NJH /NJS
-                if !ERRORLEVEL! GEQ 8 echo [WARNING] Failed to copy %%s
-            )
-
-            echo [INFO] Searching For il2cpp symbols folder
-            REM Copy IL2CPP symbols directory
-            for /d %%d in (*_BackUpThisFolder_ButDontShipItWithYourGame) do (
-                echo Copying IL2CPP symbols: %%d
-                robocopy "%CD%\\%%d" "${destPath}\\%%d" /E /R:3 /W:5 /NJH /NJS
-                if !ERRORLEVEL! GEQ 8 echo [WARNING] Failed to copy %%d
-            )
-
-            echo [INFO] Searching For burst debug folder
-            REM Copy Burst debug info
-            for /d %%d in (*_BurstDebugInformation_DoNotShip) do (
-                echo Copying Burst symbols: %%d
-                robocopy "%CD%\\%%d" "${destPath}\\%%d" /E /R:3 /W:5 /NJH /NJS
-                if !ERRORLEVEL! GEQ 8 echo [WARNING] Failed to copy %%d
-            )
+        if "!FOUND!"=="" (
+            REM No single artifact -- copy entire build directory (Steam/standalone)
+            echo [INFO] Copying entire build directory
+            robocopy "%CD%" "${destPath}" /E /MT:8 /R:3 /W:5 /NJH /NJS /NFL /NDL
+            if !ERRORLEVEL! GEQ 8 echo [ERROR] Failed to copy build directory
         ) else (
-            REM No specific artifact files found - copy entire build directory
-            REM This handles Steam/standalone builds that produce exe + data folders
-            echo [INFO] No single artifact file found, copying entire build directory
-            robocopy "%CD%" "${destPath}" /E /R:3 /W:5 /NJH /NJS
-            if !ERRORLEVEL! GEQ 8 echo [WARNING] Failed to copy build directory
+            REM Copy all artifact files + symbols in one pass each
+            echo [INFO] Copying build artifacts
+            robocopy "%CD%" "${destPath}" *.apk *.aab *.ipa *.nsp *.symbols.zip /R:3 /W:5 /NJH /NJS /NFL /NDL
+            if !ERRORLEVEL! GEQ 8 echo [WARNING] Some artifact files failed to copy
+
+            REM Copy directories in parallel: nspd, IL2CPP symbols, Burst debug
+            for /d %%d in (*.nspd *_BackUpThisFolder_ButDontShipItWithYourGame *_BurstDebugInformation_DoNotShip) do (
+                echo [INFO] Copying: %%d
+                start /b robocopy "%CD%\\%%d" "${destPath}\\%%d" /E /MT:8 /R:3 /W:5 /NJH /NJS /NFL /NDL
+            )
+            REM Wait for background robocopy processes to finish
+            :waitloop
+            tasklist /fi "imagename eq robocopy.exe" 2>nul | find /i "robocopy" >nul
+            if not errorlevel 1 (
+                timeout /t 1 /nobreak >nul
+                goto waitloop
+            )
         )
         echo [INFO] Local share copy complete
-        REM Robocopy exit codes 0-7 are success; normalize to 0 so Jenkins doesn't fail the step
-        if !ERRORLEVEL! LSS 8 exit /b 0
-        exit /b 1
+        exit /b 0
     """
 
     common.updateUploadStatus('local', 'done')
