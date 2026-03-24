@@ -650,7 +650,7 @@ def sendSlackBuildNotification(Map config) {
     def storeIcons = [
         Android: 'https://img.icons8.com/fluency/48/android-os.png',
         iOS: 'https://img.icons8.com/ios-filled/50/FFFFFF/mac-os.png',
-        Amazon: 'https://img.icons8.com/fluency/48/android-os.png',
+        Amazon: 'https://img.icons8.com/color/48/amazon.png',
         StandaloneWindows64: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/steam.png',
         StandaloneLinux64: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/steam.png',
         Switch: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/nintendo-switch.png'
