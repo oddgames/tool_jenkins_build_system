@@ -22,7 +22,7 @@ namespace ODDFramework
             PlayerSettings.SetStackTraceLogType(LogType.Exception, StackTraceLogType.Full);
 
             PlayerSettings.SetScriptingBackend(NamedBuildTarget.NintendoSwitch, ScriptingImplementation.IL2CPP);
-            PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.NintendoSwitch, ManagedStrippingLevel.Medium);
+            PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.NintendoSwitch, ManagedStrippingLevel.Minimal);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.NintendoSwitch, Il2CppCompilerConfiguration.Debug);
         }
 
@@ -41,7 +41,7 @@ namespace ODDFramework
             PlayerSettings.SetStackTraceLogType(LogType.Exception, StackTraceLogType.ScriptOnly);
 
             PlayerSettings.SetScriptingBackend(NamedBuildTarget.NintendoSwitch, ScriptingImplementation.IL2CPP);
-            PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.NintendoSwitch, ManagedStrippingLevel.High);
+            PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.NintendoSwitch, ManagedStrippingLevel.Minimal);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.NintendoSwitch, Il2CppCompilerConfiguration.Release);
             PlayerSettings.SetIl2CppCodeGeneration(NamedBuildTarget.NintendoSwitch, Il2CppCodeGeneration.OptimizeSpeed);
         }
