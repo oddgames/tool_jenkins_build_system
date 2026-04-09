@@ -119,6 +119,10 @@ private def _queryNodes(String label, String currentJob) {
             return [node: label, log: null, error: "[Node] No agents configured for label '${label}'"]
         }
 
+        // Build a map of queued job counts per node so we account for builds
+        // that have been assigned a node but haven't started executing yet
+        def queuedPerNode = _getQueuedJobsPerNode(jenkins)
+
         def currentWsName = _workspaceName(currentJob)
         def nodeStatuses = []
         def bestNode = null
@@ -156,9 +160,24 @@ private def _queryNodes(String label, String currentJob) {
                 }
             }
 
-            def busyCount = runningJobs.size()
-            def status = "${node.displayName}: ${busyCount}/${computer.numExecutors} busy"
+            // Check queued items targeting this node for workspace conflicts
+            def queuedJobs = queuedPerNode[node.displayName] ?: []
+            for (def queuedJob : queuedJobs) {
+                if (_workspaceName(queuedJob) == currentWsName) {
+                    hasWorkspaceConflict = true
+                }
+            }
+
+            def busyCount = runningJobs.size() + queuedJobs.size()
+            def freeCount = computer.numExecutors - runningJobs.size()
+            // A node only has free executors if there are more free slots than queued items waiting
+            if (freeCount <= queuedJobs.size()) {
+                hasFreeExecutor = false
+            }
+
+            def status = "${node.displayName}: ${runningJobs.size()}/${computer.numExecutors} busy"
             if (runningJobs) status += " (${runningJobs.join(', ')})"
+            if (queuedJobs) status += " +${queuedJobs.size()} queued"
             if (hasWorkspaceConflict) status += " [ws conflict]"
             nodeStatuses << status
 
@@ -180,6 +199,45 @@ private def _queryNodes(String label, String currentJob) {
     } catch (Exception e) {
         return [node: label, log: "[Node] Jenkins API query failed: ${e.message}", error: null]
     }
+}
+
+/**
+ * Scan the Jenkins build queue and return a map of node name -> list of queued job names.
+ * Catches builds that are assigned to a node but haven't claimed an executor yet.
+ */
+@NonCPS
+private def _getQueuedJobsPerNode(def jenkins) {
+    def queuedPerNode = [:]
+    try {
+        def queue = jenkins.getQueue()
+        for (def item : queue.getItems()) {
+            def jobName = item.task?.getFullName() ?: null
+            if (!jobName) continue
+
+            // Try to determine which node this queued item targets
+            def nodeName = null
+            try {
+                def assignedLabel = item.getAssignedLabel()
+                if (assignedLabel) {
+                    // If the label matches a specific node name, use it directly
+                    def labelNodes = assignedLabel.getNodes()
+                    if (labelNodes?.size() == 1) {
+                        nodeName = labelNodes[0].displayName
+                    }
+                }
+            } catch (Exception e) {
+                // Ignore — can't determine target node for this queued item
+            }
+
+            if (nodeName) {
+                if (!queuedPerNode[nodeName]) queuedPerNode[nodeName] = []
+                queuedPerNode[nodeName] << jobName
+            }
+        }
+    } catch (Exception e) {
+        // Queue API unavailable — return empty map, fall back to executor-only check
+    }
+    return queuedPerNode
 }
 
 // ============================================================================
@@ -487,7 +545,6 @@ def amazonUpload(Map config) { platform.amazonUpload(config) }
 def uploadToGooglePlay(Map config) { platform.uploadToGooglePlay(config) }
 def uploadCrashlyticsSymbols(Map config) { platform.uploadCrashlyticsSymbols(config) }
 def collectFilteredConsoleLog() { platform.collectFilteredConsoleLog() }
-def analyzeErrorsWithGemini(String plat, String buildType) { platform.analyzeErrorsWithGemini(plat, buildType) }
 def sendUploadNotification(Map config) { ensureInitialized(); common.sendUploadNotification(config) }
 def updateUploadStatus(String stage, String result) { ensureInitialized(); common.updateUploadStatus(stage, result) }
 def handleBuildFailure(Map config) { ensureInitialized(); common.handleBuildFailure(config) }

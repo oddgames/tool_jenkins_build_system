@@ -467,6 +467,41 @@ private def _testAllPermissions(currentBuildWrapper) {
         }
     }
 
+    // --- Queue API (for detecting queued builds in pickNode) ---
+    testPermission('Jenkins.getQueue') {
+        if (jenkins) jenkins.getQueue()
+    }
+    testPermission('Queue.getItems') {
+        if (jenkins) {
+            def queue = jenkins.getQueue()
+            if (queue) queue.getItems()
+        }
+    }
+    testPermission('Queue.Item.getAssignedLabel') {
+        if (jenkins) {
+            def queue = jenkins.getQueue()
+            if (queue) {
+                def items = queue.getItems()
+                for (def item : items) {
+                    item.getAssignedLabel()
+                    break
+                }
+            }
+        }
+    }
+    testPermission('Queue.Item.task') {
+        if (jenkins) {
+            def queue = jenkins.getQueue()
+            if (queue) {
+                def items = queue.getItems()
+                for (def item : items) {
+                    item.task?.getFullName()
+                    break
+                }
+            }
+        }
+    }
+
     // --- FlowInterruptedException + causes property ---
     testPermission('FlowInterruptedException class') {
         this.class.classLoader.loadClass("org.jenkinsci.plugins.workflow.steps.FlowInterruptedException")
@@ -754,12 +789,12 @@ def sendSlackBuildNotification(Map config) {
             def explanation = parsed.explanation ?: ''
             def errors = parsed.errors ?: []
 
-            // Block 1: AI analysis explanation
+            // Block 1: Error explanation
             if (explanation) {
                 // Slack section text limit is 3000 chars - leave room for prefix
                 def isKnownError = parsed.knownError ?: false
                 def truncatedExplanation = explanation.take(2970)
-                def header = isKnownError ? ":warning: *Known Error*" : ":robot_face: *AI Analysis*"
+                def header = isKnownError ? ":warning: *Known Error*" : ":warning: *Error Analysis*"
                 blocks << [type: 'section', text: [type: 'mrkdwn', text: "${header}\n${truncatedExplanation}"]]
             }
 
@@ -785,7 +820,7 @@ def sendSlackBuildNotification(Map config) {
             }
         } catch (Exception parseEx) {
             // Fallback for non-JSON analysis (e.g. old format or AI failure message)
-            blocks << [type: 'section', text: [type: 'mrkdwn', text: ":robot_face: ${errorAnalysis}"]]
+            blocks << [type: 'section', text: [type: 'mrkdwn', text: ":warning: ${errorAnalysis}"]]
         }
     }
 
@@ -1111,16 +1146,16 @@ def formatFileSize(long bytes) {
 }
 
 /**
- * Write Gemini analysis JSON to gemini_analysis.txt and add a sidebar link.
+ * Write error analysis JSON to error_analysis.txt and add a sidebar link.
  * Returns the parsed analysis object (or null on parse failure) so callers can reuse it.
  */
 private def saveAnalysisFile(String errorAnalysis, String headerText) {
-    def analysisFile = "${env.ARTIFACT_PATH}/gemini_analysis.txt"
+    def analysisFile = "${env.ARTIFACT_PATH}/error_analysis.txt"
     def analysisText = headerText
     def parsed = null
     try {
         parsed = new groovy.json.JsonSlurper().parseText(errorAnalysis)
-        def analysisLabel = parsed.knownError ? 'KNOWN ERROR' : 'AI ANALYSIS'
+        def analysisLabel = parsed.knownError ? 'KNOWN ERROR' : 'ERROR ANALYSIS'
         analysisText += "\n${analysisLabel}:\n${parsed.explanation}\n"
         if (parsed.errors) {
             analysisText += "\n${'=' * 50}\nDETECTED ERRORS:\n${'=' * 50}\n"
@@ -1134,9 +1169,9 @@ private def saveAnalysisFile(String errorAnalysis, String headerText) {
         analysisText += "\n${errorAnalysis}"
     }
     writeFile file: analysisFile, text: analysisText
-    def sidebarLabel = parsed?.knownError ? 'Known Error' : 'AI Analysis'
-    def sidebarIcon = parsed?.knownError ? 'warning.png' : 'https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg'
-    addSidebarLink("${env.BUILD_URL}artifact/gemini_analysis.txt", sidebarLabel, sidebarIcon)
+    def sidebarLabel = parsed?.knownError ? 'Known Error' : 'Error Analysis'
+    def sidebarIcon = parsed?.knownError ? 'warning.png' : 'symbol-warning.png'
+    addSidebarLink("${env.BUILD_URL}artifact/error_analysis.txt", sidebarLabel, sidebarIcon)
     return parsed
 }
 
@@ -1428,7 +1463,7 @@ def finalizeBuild(Map config) {
         // Non-critical — ignore
     }
 
-    // Step 2: Error analysis — known patterns (free) or AI (opt-in via ENABLE_AI_ANALYSIS)
+    // Step 2: Error analysis — known patterns first, then raw exception fallback
     def errorAnalysis = env.ERROR_ANALYSIS ?: null
     if (!errorAnalysis) {
         // Check known error patterns first (no API cost)
@@ -1451,14 +1486,6 @@ def finalizeBuild(Map config) {
             // Ignore — will fall through
         }
 
-        // AI analysis only if explicitly enabled (default: off — use dashboard analyzer instead)
-        if (!errorAnalysis && env.ENABLE_AI_ANALYSIS == 'true') {
-            try {
-                errorAnalysis = platformModule?.analyzeErrorsWithGemini(platform, buildType)
-            } catch (Exception e) {
-                echo "[WARNING] AI analysis failed: ${e.message}"
-            }
-        }
     }
 
     // Step 2: Fallback - extract raw exception if AI didn't produce results
@@ -1485,7 +1512,7 @@ def finalizeBuild(Map config) {
             env.ERROR_ANALYSIS = errorAnalysis
             def parsedCheck = new groovy.json.JsonSlurper().parseText(errorAnalysis)
             def isKnown = parsedCheck.knownError ?: false
-            def headerType = isKnown ? 'Known Error' : (status == 'unstable' ? 'Build Unstable Analysis' : 'Build Failure Analysis')
+            def headerType = isKnown ? 'Known Error' : (status == 'unstable' ? 'Build Unstable' : 'Build Failure')
             def failedInfo = status == 'unstable'
                 ? "Unstable Reasons: ${env.UNSTABLE_REASONS}"
                 : "Failed Stage: ${env.FAILED_STAGE ?: env.CURRENT_STAGE ?: 'Unknown'}"
@@ -1493,7 +1520,7 @@ def finalizeBuild(Map config) {
             def parsedAnalysis = saveAnalysisFile(errorAnalysis, header)
             if (parsedAnalysis) {
                 def isKnownError = parsedAnalysis.knownError ?: false
-                def summaryLabel = isKnownError ? "Known Error" : "AI Analysis"
+                def summaryLabel = isKnownError ? "Known Error" : "Error Analysis"
                 def aiSummary = "<br/><b>${summaryLabel}:</b> ${parsedAnalysis.explanation}<br/>"
                 if (parsedAnalysis.errors) {
                     aiSummary += "<br/><b>Detected Errors:</b><pre>"

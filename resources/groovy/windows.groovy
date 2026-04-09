@@ -5023,6 +5023,92 @@ def _deregisterStalePlasticWorkspace(String wsName) {
 }
 
 /**
+ * Scan a workspace directory for Windows reserved filenames (nul, con, prn, aux, com1-9, lpt1-9)
+ * and delete them using Win32 API via the \\?\ prefix which bypasses Windows name restrictions.
+ * These files can end up in the workspace when checked in from macOS/Linux.
+ * Plastic SCM errors on update when it encounters them but continues, so this is preventative cleanup.
+ * Uses kernel32 FindFirstFileW/DeleteFileW since .NET and cmd.exe cannot even see reserved names.
+ */
+private def _removeReservedFilenames(String wsDir) {
+    try {
+        def psScript = '''Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+
+public class Win32ReservedFileCleaner {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr FindFirstFileW(string lpFileName, out WIN32_FIND_DATA lpFindFileData);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern bool FindNextFileW(IntPtr hFindFile, out WIN32_FIND_DATA lpFindFileData);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool FindClose(IntPtr hFindFile);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool DeleteFileW(string lpFileName);
+
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public struct WIN32_FIND_DATA {
+        public uint dwFileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftCreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastWriteTime;
+        public uint nFileSizeHigh;
+        public uint nFileSizeLow;
+        public uint dwReserved0;
+        public uint dwReserved1;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)]
+        public string cFileName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=14)]
+        public string cAlternateFileName;
+    }
+
+    static readonly IntPtr INVALID = new IntPtr(-1);
+    static readonly string[] RESERVED = {"CON","PRN","AUX","NUL",
+        "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+        "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"};
+
+    static bool IsReserved(string name) {
+        string noExt = name.Contains(".") ? name.Substring(0, name.IndexOf('.')) : name;
+        return Array.Exists(RESERVED, r => r.Equals(noExt, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public static int CleanDir(string dir) {
+        int count = 0;
+        ScanDir(@"\\?\" + dir, ref count);
+        return count;
+    }
+
+    static void ScanDir(string path, ref int count) {
+        WIN32_FIND_DATA fd;
+        IntPtr h = FindFirstFileW(path + @"\*", out fd);
+        if (h == INVALID) return;
+        do {
+            if (fd.cFileName == "." || fd.cFileName == "..") continue;
+            string full = path + @"\" + fd.cFileName;
+            if ((fd.dwFileAttributes & 0x10) != 0) {
+                ScanDir(full, ref count);
+            } else if (IsReserved(fd.cFileName)) {
+                Console.WriteLine("Removing reserved filename: " + full.Replace(@"\\?\",""));
+                DeleteFileW(full);
+                count++;
+            }
+        } while (FindNextFileW(h, out fd));
+        FindClose(h);
+    }
+}
+'@
+
+$n = [Win32ReservedFileCleaner]::CleanDir($args[0])
+if ($n -eq 0) { Write-Host "No reserved filenames found." }
+else { Write-Host "Removed $n reserved file(s)." }
+'''
+        writeFile file: 'clean_reserved.ps1', text: psScript
+        bat script: "@powershell -NoProfile -ExecutionPolicy Bypass -File clean_reserved.ps1 \"${wsDir}\"", returnStatus: true
+    } catch (Exception e) {
+        echo "[DEBUG] Reserved filename cleanup failed: ${e.message}"
+    }
+}
+
+/**
  * Checkout from Plastic SCM using cm switch instead of the Jenkins plugin checkout.
  * This avoids the plugin trying to delete/recreate the workspace directory, which
  * fails on Windows when file locks exist (antivirus, leftover processes, etc.).
@@ -5070,10 +5156,13 @@ def plasticCheckout(Map config) {
         }
     }
 
-    // 2. Undo any pending changes left from a previous build (prevents switch failure)
+    // 2. Remove Windows reserved filenames (nul, con, prn, etc.) that Plastic can't update/delete
+    _removeReservedFilenames(wsDir)
+
+    // 3. Undo any pending changes left from a previous build (prevents switch failure)
     bat "@cd /d \"${wsDir}\" && cm undo . -r"
 
-    // 3. Switch to desired changeset or branch
+    // 4. Switch to desired changeset or branch
     if (changeset) {
         echo "[Checkout] Switching to changeset ${changeset}"
         bat "@cd /d \"${wsDir}\" && cm switch cs:${changeset} --noinput"
@@ -5084,7 +5173,7 @@ def plasticCheckout(Map config) {
         error "[Checkout] Either 'branch' or 'changeset' must be specified"
     }
 
-    // 4. Get loaded changeset ID from workspace status
+    // 5. Get loaded changeset ID from workspace status
     //    cm status --header --machinereadable returns: STATUS <csId> <repo> <server>
     def statusOutput = bat(
         script: "@cd /d \"${wsDir}\" && cm status --header --machinereadable",
@@ -5094,7 +5183,7 @@ def plasticCheckout(Map config) {
     def csId = statusParts.length > 1 ? statusParts[1] : null
     if (!csId) error "[Checkout] Could not determine loaded changeset from: ${statusOutput}"
 
-    // 5. Query changeset details (branch, author, GUID)
+    // 6. Query changeset details (branch, author, GUID)
     def csInfo = bat(
         script: """@cm find changeset "where changesetid=${csId}" --format="{changesetid}#{branch}#{owner}#{guid}" --nototal on repository "'${repSpec}'" """,
         returnStdout: true
@@ -6014,7 +6103,7 @@ ${sw.toString()}
         def filterScript = '''
 require "json"
 
-MAX_LOG_LINES = 2000
+MAX_LOG_LINES = 1000
 
 raw_log = File.read("console_log.txt", mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
 
@@ -6051,6 +6140,17 @@ noise_patterns = [
   /^file: Assets/,
   /^Current files:$/,
   /: editor enabled (?:True|False), build targets/,
+  /^Collecting assets\\.\\.\\.$/,
+  /^Packing sprites\\.\\.\\.$/,
+  /^(?:Loading|Unloading) (?:native|managed) assembly/,
+  /^\\s*\\d+ assets? (?:added|changed|removed|unchanged)/,
+  /^Refreshing native plugins/,
+  /^Preloading \\d+ native plugins/,
+  /^Native extension for /,
+  /^\\[Licensing\\]/,
+  /^Using pre-set license/,
+  /^Successfully changed project path/,
+  /^\\s*\\[\\d+\\/\\d+\\] /,
 ]
 
 filtered = raw_log.lines.reject { |line| noise_patterns.any? { |p| line.strip.match?(p) } }
@@ -6096,222 +6196,6 @@ STDERR.puts "[INFO] Filtered #{filtered.size} -> #{deduped.size} lines (saved la
     } catch (Exception e) {
         echo "[WARN] Console log collection failed: ${e.message}"
         return null
-    }
-}
-
-// ============================================================================
-// GEMINI ANALYSIS
-// ============================================================================
-
-def analyzeErrorsWithGemini(String platform, String buildType) {
-    try {
-        def analysis = ""
-        withCredentials([string(credentialsId: 'gemini-api-key', variable: 'GEMINI_API_KEY')]) {
-            def stage = env.FAILED_STAGE ? " in stage '${env.FAILED_STAGE}'" : ""
-
-            // Determine if this is a pipeline/infrastructure failure or a Unity build failure
-            def pipelineStages = ['Validate', 'Checkout', 'Startup', 'Preflight Checks', 'Setup', 'Extract Version', 'Validate Unity', 'Calculate Build Version']
-            def isEarlyFailure = pipelineStages.contains(env.FAILED_STAGE) || !env.FAILED_STAGE
-
-            def prompt
-            def commonFixes = """
-KNOWN ERRORS AND FIXES (use these when you recognise a matching error):
-- 'URL rejected: Port number was not a decimal number' -> Git credentials have special characters. FIX: Run build with Clean Cache = PackageCache, update Jenkins credential 'github-credentials' with a GitHub PAT (not password), username must be GitHub username (not email)
-- 'unable to access.*github.com' / 'Authentication failed' -> Git credentials invalid or expired. FIX: Generate new GitHub PAT at github.com > Settings > Developer settings > Personal access tokens, update Jenkins credential 'github-credentials'
-- 'error CS' -> C# compilation error in Unity scripts. FIX: Check the specific script file and line number in the error. Common causes: missing using directive, API changes after Unity upgrade, missing assembly reference
-- 'BuildFailedException' -> Unity build script threw an error. FIX: Check the exception message for the specific cause
-- 'Gradle build failed' / 'FAILURE: Build failed' -> Android Gradle error. FIX: Check for duplicate classes (use -D flag or exclude transitive deps), SDK version mismatch, or minification issues
-- 'Code signing' / 'provisioning profile' -> iOS signing issue. FIX: Check Apple Developer portal for valid certificates and profiles, ensure they're installed on the build agent
-- 'Failed to resolve packages' / 'Project has invalid dependencies' -> Unity Package Manager can't fetch packages. FIX: Run with Clean Cache = PackageCache to clear stale cached packages, check git credentials and package URLs in manifest.json
-- 'Addressables' / 'BuildContent' error -> Addressables build failed. FIX: Check for missing or moved assets, duplicate addresses, or group configuration issues
-- 'il2cpp' error -> IL2CPP compilation failed. FIX: Check for unsupported C# features, missing type metadata, or platform-specific API usage
-- 'Failed to resolve assembly: nunit.framework' / 'AssemblyResolutionException' -> IL2CPP UnityLinker can't find test framework assemblies. FIX: Test code (using NUnit.Framework or UnityEngine.TestTools) is being included in the build. Check Assembly Definition files (.asmdef) and ensure test assemblies have 'Test Assemblies' checkbox enabled and proper platform constraints (Editor/Test only). Remove test code from runtime scripts or move to Editor/Tests folders
-- 'Failed to resolve assembly.*UnityEditor' -> Runtime code references UnityEditor.dll which is Editor-only. FIX: Check for 'using UnityEditor;' in runtime scripts, ensure code using UnityEditor APIs is wrapped in #if UNITY_EDITOR conditionals, or move Editor-only code to Editor folders
-- 'Plastic SCM' / 'cm ' error -> Source control issue. FIX: Check Plastic SCM credentials, server connectivity, or workspace state
-- 'rclone' error -> Cloud storage sync failed. FIX: Check rclone credential in Jenkins, verify bucket access
-- 'SteamCMD' / 'steam' error -> Steam upload failed. FIX: Check Steam credentials, app ID, and depot configuration
-- 'Steam Guard code' / 'Account Logon Denied' -> SteamCMD not authorized on this machine. FIX: Remote into the build agent, run SteamCMD manually (steamcmd.exe +login <username>), enter Steam Guard code from email, then quit. This stores a persistent login token. After authorization, retry the Jenkins build
-- 'Keystore' / 'jarsigner' error -> Android signing failed. FIX: Check keystore file exists, password is correct, and alias name matches
-- 'Duplicate class' / 'DuplicateClassException' -> Multiple libraries contain the same class. FIX: Exclude one duplicate via Gradle dependencies or remove conflicting library
-- 'Out of memory' / 'MemoryError' -> Build ran out of memory. FIX: Increase agent memory, reduce parallel compilation, or split build
-- 'FMOD' error -> Audio middleware issue. FIX: Usually non-fatal, check FMOD plugin version compatibility
-- 'Timeout' / 'timed out' -> Operation took too long. FIX: Check network connectivity, increase timeout, or check if agent is overloaded
-- 'No such DSL method' / 'NoSuchMethodError' -> Jenkins shared library method not found. FIX: The shared library may need updating - check that the method exists in buildUtils.groovy and the platform-specific groovy file, and that Jenkins has fetched the latest library version"""
-
-            def parallelCancellationNote = """
-PARALLEL STAGE CANCELLATIONS: When a Jenkins stage fails and parallel stages have failFast:true, the remaining branches are automatically cancelled. Cancelled branches show 'Failed in branch X' in the log but did NOT independently fail - they were aborted by the primary failure. IGNORE any 'Failed in branch X' entry that has no actual error output (Error:, ERROR:, Exception, fatal, 'not recognized', 'not found') within its own log section. Report only the stage/branch where the real error occurred first."""
-
-            if (isEarlyFailure) {
-                prompt = """This is a Jenkins pipeline log that failed${stage}. This is a pipeline/infrastructure failure, NOT a Unity build failure.
-
-PRIORITY: If you see '=== ACTUAL BUILD FAILURE EXCEPTION ===' at the start of the log, that IS the error - report it as CRITICAL.
-
-Look for: Groovy script errors, missing environment variables, credential issues, workspace problems, PlasticSCM/Git errors, tool installation failures, or Jenkins plugin errors. Find the ACTUAL error message that caused the failure. The error often appears just before '[Pipeline] error' or contains 'Exception', 'Error:', 'ERROR:', 'Failed', or 'missing'.
-
-The log may be split into sections with '=== STAGE: StageName ===' headers. Pay attention to which stage the error occurs in.
-${parallelCancellationNote}
-${commonFixes}
-
-For each error you find, provide a specific actionable fix based on the known fixes above or your own knowledge."""
-            } else {
-                def unityContext = "Common Unity errors: 'error CS' (script compilation), missing references, shader errors, asset import failures, Addressables build errors, 'BuildFailedException', scene loading issues, missing assemblies."
-                def platformContext = [
-                    'Android': 'Android-specific: Gradle errors, SDK/NDK issues, IL2CPP/Mono backend errors, keystore/signing problems, ProGuard/R8 minification issues, manifest errors, AAB/APK packaging failures.',
-                    'iOS': 'iOS-specific: Xcode build errors, code signing failures, provisioning profile issues, linker errors, bitcode problems, framework embedding issues, entitlements errors, IPA export failures.',
-                    'Windows': 'Windows-specific: IL2CPP errors, linker failures, missing DLLs, build path issues, Steam integration errors.'
-                ][platform] ?: ''
-                prompt = """This is a Unity ${platform} ${buildType} build log from Jenkins that failed${stage}. ${unityContext} ${platformContext}
-
-IMPORTANT ANALYSIS GUIDELINES:
-1. PRIORITY: If you see '=== ACTUAL BUILD FAILURE EXCEPTION ===' at the start, that IS the root cause - report it as CRITICAL
-2. IGNORE these (not errors): 'warning CS', 'Processing X%', bundle file listings, progress indicators, '[Pipeline]' markers, successful task completions
-3. LOOK FOR: 'error CS', 'Error:', 'ERROR:', 'Exception', 'Failed', 'FAILED', 'fatal', stack traces, 'Build FAILED'
-4. The log may be split into sections with '=== STAGE: StageName ===' headers. Pay attention to which stage the error occurs in.
-5. The actual error is usually near the END of the log, just before the failure
-6. 'Failed files: N' means N files failed processing - look for WHICH specific file failed and WHY
-7. Focus on the ROOT CAUSE, not symptoms. If you see 'Failed files: 1', find what that one file is and why it failed
-${parallelCancellationNote}
-${commonFixes}
-
-For each error you find, provide a specific actionable fix based on the known fixes above or your own knowledge."""
-            }
-
-            // Read the pre-filtered console log (already archived by collectFilteredConsoleLog)
-            def filteredLogPath = fileExists('console_log_filtered.txt') ? 'console_log_filtered.txt' : 'console_log.txt'
-            writeFile file: 'gemini_prompt.txt', text: prompt
-
-            def rubyScript = '''
-require "json"
-require "net/http"
-require "uri"
-
-API_KEY = ARGV[0]
-IS_INFRA_FAILURE = ARGV[1] == "true"
-MODEL = IS_INFRA_FAILURE ? "gemini-2.0-flash-lite" : "gemini-2.0-flash"
-MAX_LOG_LINES = IS_INFRA_FAILURE ? 1000 : 2000
-
-log_file = File.exist?("console_log_filtered.txt") ? "console_log_filtered.txt" : "console_log.txt"
-log_content = File.read(log_file, mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
-all_lines = log_content.lines
-log_slice = all_lines.last(MAX_LOG_LINES).join
-
-prompt = File.read("gemini_prompt.txt", mode: "r:bom|utf-8").encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
-
-STDERR.puts "[INFO] Model: #{MODEL} | Sending #{[MAX_LOG_LINES, all_lines.size].min} of #{all_lines.size} lines"
-
-response_schema = {
-  type: "object",
-  properties: {
-    explanation: { type: "string", description: "2-3 sentence explanation of the root cause (max 500 characters to fit in Slack). Reference specific error messages. Be concise." },
-    errors: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          severity: { type: "string", enum: ["CRITICAL", "HIGH", "MEDIUM", "LOW"], description: "CRITICAL=build-breaking, HIGH=likely cause, MEDIUM=contributing factor, LOW=minor issue" },
-          stage: { type: "string", description: "The pipeline stage where this error occurred, from the '=== STAGE: X ===' headers in the log. Use the exact stage name." },
-          message: { type: "string", description: "The EXACT raw error line copied verbatim from the log. Do NOT paraphrase, summarize, or reformat. Copy the entire line character-for-character including file paths, line numbers, and error codes." },
-          fix: { type: "string", description: "Specific actionable fix for this error. Be concrete: name the Jenkins setting to change, the file to edit, the command to run, or the build parameter to set." }
-        },
-        required: ["severity", "stage", "message", "fix"]
-      },
-      description: "ALL errors found in the log, sorted by severity (CRITICAL first). Include: \'error CS\', \'Error:\', \'ERROR:\', \'Exception\', \'Failed\', \'FAILED\', \'fatal\', \'Duplicate class\', \'Build FAILED\', stack traces. Copy each error exactly as it appears."
-    },
-  },
-  required: ["explanation", "errors"]
-}
-
-body = {
-  contents: [{role: "user", parts: [{text: prompt}, {text: log_slice}]}],
-  generationConfig: {
-    responseMimeType: "application/json",
-    responseSchema: response_schema
-  }
-}.to_json
-
-uri = URI("https://generativelanguage.googleapis.com/v1beta/models/#{MODEL}:generateContent?key=#{API_KEY}")
-http = Net::HTTP.new(uri.host, uri.port)
-http.use_ssl = true
-http.open_timeout = 30
-http.read_timeout = 60
-req = Net::HTTP::Post.new(uri)
-req["Content-Type"] = "application/json"
-req.body = body
-
-final_data = nil
-begin
-  resp = http.request(req)
-  result = JSON.parse(resp.body)
-
-  unless result["candidates"] && result["candidates"][0]
-    if result["error"]
-      STDERR.puts "API Error: #{result["error"]["message"]}"
-    else
-      STDERR.puts "Unexpected response: #{resp.body[0..200]}"
-    end
-  else
-    final_data = JSON.parse(result["candidates"][0]["content"]["parts"][0]["text"])
-  end
-rescue => e
-  STDERR.puts "HTTP error: #{e.message}"
-end
-
-if final_data
-  output = {
-    explanation: final_data["explanation"],
-    errors: (final_data["errors"] || []).map { |e|
-      { severity: e["severity"] || "UNKNOWN", stage: e["stage"] || "", message: e["message"], fix: e["fix"] }
-    }
-  }
-  puts JSON.generate(output)
-elsif !final_data
-  STDERR.puts "No analysis result obtained"
-end
-'''
-            writeFile file: 'gemini_analyze.rb', text: rubyScript
-
-            // Run Ruby script - stdout is JSON, stderr goes to file for diagnostics
-            def analysisOutput = bat(
-                script: '''
-                    @echo off
-                    ruby gemini_analyze.rb "%GEMINI_API_KEY%" "${isEarlyFailure}" 2>gemini_stderr.txt
-                ''',
-                returnStdout: true
-            ).trim()
-
-            // Log any diagnostic output from stderr
-            if (fileExists('gemini_stderr.txt')) {
-                def stderrOutput = readFile('gemini_stderr.txt').trim()
-                if (stderrOutput) echo "[Gemini] ${stderrOutput}"
-            }
-
-            echo "Gemini analysis output: ${analysisOutput ? analysisOutput.take(200) + '...' : '(empty)'}"
-
-            if (analysisOutput && !analysisOutput.startsWith("Error:")) {
-                // Parse structured JSON from Ruby script
-                try {
-                    def jsonSlurper = new groovy.json.JsonSlurper()
-                    def parsed = jsonSlurper.parseText(analysisOutput)
-
-                    def result = [
-                        explanation: parsed.explanation ?: '',
-                        errors: (parsed.errors ?: []).collect { err ->
-                            [severity: err.severity ?: 'UNKNOWN', stage: err.stage ?: '', message: err.message ?: '', fix: err.fix ?: '']
-                        }
-                    ]
-                    analysis = new groovy.json.JsonBuilder(result).toString()
-                } catch (Exception parseEx) {
-                    echo "[WARN] Could not parse Gemini JSON, using raw output: ${parseEx.message}"
-                    def fallback = [explanation: analysisOutput, errors: []]
-                    analysis = new groovy.json.JsonBuilder(fallback).toString()
-                }
-            }
-        }
-        return analysis
-    } catch (Exception e) {
-        echo "Gemini analysis failed: ${e.message}"
-        def fallback = [explanation: "AI analysis failed: ${e.message}", errors: []]
-        return new groovy.json.JsonBuilder(fallback).toString()
     }
 }
 

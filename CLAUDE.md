@@ -10,7 +10,7 @@ vars/
 
 resources/
   groovy/
-    common.groovy            # Platform-agnostic: Slack, badges, Gemini AI, versioning, SCM
+    common.groovy            # Platform-agnostic: Slack, badges, versioning, SCM
     windows.groovy           # Windows agent: prereqs, Unity builds, uploads, Steam staging
     macos.groovy             # macOS agent: prereqs, Xcode, TestFlight, keychain
   Editor/Pipeline/           # Unity C# scripts copied into projects at build time
@@ -72,7 +72,7 @@ This project uses **Plastic SCM**, not Git.
 - Windows 260-char path limit — Steam uses `C:\Temp\Steam\` staging to work around this
 - Script approvals are verified at build time by `preflightJenkinsPermissions()` in `common.groovy`
 - **When adding sandbox-restricted API calls** (anything under `jenkins.model.*`, `hudson.*`, `org.jenkinsci.*`, `rawBuild.*`, `classLoader.*`, `.newInstance()`), **add a matching `testPermission()` block** to `preflightJenkinsPermissions()`. Each permission MUST have its own try/catch so all pending signatures are queued at once in Jenkins' Script Approval page.
-- Node selection API (`pickNode()`) requires: `Jenkins.get`, `getLabel`, `getLabels`, `Node.toComputer`, `Node.getDisplayName`, `LabelAtom.getNodes`, `Computer.isOnline`, `Computer.numExecutors`, `Computer.getExecutors`, `Executor.isBusy`, `Executor.getCurrentExecutable`, `Run.getParent`, `Job.getFullName`
+- Node selection API (`pickNode()`) requires: `Jenkins.get`, `getLabel`, `getLabels`, `Node.toComputer`, `Node.getDisplayName`, `LabelAtom.getNodes`, `Computer.isOnline`, `Computer.numExecutors`, `Computer.getExecutors`, `Executor.isBusy`, `Executor.getCurrentExecutable`, `Run.getParent`, `Job.getFullName`, `Jenkins.getQueue`, `Queue.getItems`, `Queue.Item.getAssignedLabel`, `Queue.Item.task`
 
 ### Sandbox Restrictions
 
@@ -89,10 +89,6 @@ Use **specific version IDs**, not bare prefix names:
 
 - `forfiles` returns **exit code 1** when no files match — suppress with `2>nul || echo ...` to prevent false failures
 - `for %%f in (*.apk *.aab)` can match multiple files — use `goto :eof` after first match to get single filename
-
-### Gemini AI Analysis
-
-Gemini error analysis uses **Ruby** (not Python). Any jenkinsfile with `gemini-api-key` needs `preflightRuby()` in Preflight Checks, or AI analysis silently fails on build errors.
 
 ### Unity Hub CLI
 

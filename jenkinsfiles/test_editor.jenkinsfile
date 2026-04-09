@@ -15,7 +15,6 @@
  *
  * Required Jenkins Credentials:
  *   unity-credentials     - Username/password for Unity license
- *   gemini-api-key        - Secret text for AI failure analysis (optional)
  *   slack-token           - Secret text for Slack build notifications (optional)
  */
 

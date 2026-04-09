@@ -20,7 +20,6 @@
  *   apple-api-key          - File credential containing App Store Connect API key JSON
  *   rclone                 - File credential containing rclone.conf
  *   google-play-json       - File credential for Firebase Crashlytics symbol upload (optional, requires Firebase Crashlytics Admin role)
- *   gemini-api-key         - Secret text for AI failure analysis (optional)
  *   slack-token            - Secret text for Slack build notifications (optional)
  *
  * Optional Jenkins Environment Variables:

@@ -19,7 +19,6 @@
  *   unity-credentials     - Username/password for Unity license
  *   steam-credentials     - Username/password for Steam upload
  *   rclone                - File credential containing rclone.conf
- *   gemini-api-key        - Secret text for AI failure analysis (optional)
  *   slack-token           - Secret text for Slack build notifications (optional)
  */
 

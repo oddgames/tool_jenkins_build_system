@@ -22,7 +22,6 @@
  *   ${CREDENTIAL_KEYALIAS_PASS}  - Secret text for key alias password
  *   rclone                       - File credential containing rclone.conf
  *   google-play-json             - File credential containing Google Play service account JSON
- *   gemini-api-key               - Secret text for AI failure analysis (optional)
  *   slack-token                  - Secret text for Slack build notifications (optional)
  */
 

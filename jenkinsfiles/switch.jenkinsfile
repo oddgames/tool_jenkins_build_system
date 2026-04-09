@@ -14,7 +14,6 @@
  *   unity-credentials     - Username/password for Unity license
  *   switch-credentials    - Username/password for Nintendo Developer Portal
  *   rclone                - File credential containing rclone.conf
- *   gemini-api-key        - Secret text for AI failure analysis (optional)
  *   slack-token           - Secret text for Slack build notifications (optional)
  *
  * Unity Project Requirements:
