@@ -1772,16 +1772,23 @@ def acceptAndroidSdkLicenses() {
                 """, returnStdout: true).trim()
 
                 if (targetSdk && targetSdk.isInteger() && targetSdk.toInteger() > 0) {
-                    echo "[INFO] Unity project targets Android SDK ${targetSdk}, ensuring platform is installed..."
-                    def sdkInstallResult = bat(script: """
-                        @echo off
-                        ${javaHome ? "set \"JAVA_HOME=${javaHome}\"" : ''}
-                        "${sdkmanager}" "platforms;android-${targetSdk}" --sdk_root="${sdkPath}" 2>&1
-                    """, returnStatus: true)
-                    if (sdkInstallResult == 0) {
-                        echo "[OK] Android SDK platform ${targetSdk} install completed"
+                    // Check if platform is already installed before invoking sdkmanager
+                    def platformDir = "${sdkPath}\\platforms\\android-${targetSdk}"
+                    def platformExists = bat(script: "@if exist \"${platformDir}\\android.jar\" echo found", returnStdout: true).trim()
+                    if (platformExists == 'found') {
+                        echo "[OK] Android SDK platform ${targetSdk} already installed"
                     } else {
-                        echo "[WARN] sdkmanager failed to install Android SDK platform ${targetSdk} (exit ${sdkInstallResult}) — Unity may still build if the platform is already present"
+                        echo "[INFO] Unity project targets Android SDK ${targetSdk}, installing platform..."
+                        def sdkInstallResult = bat(script: """
+                            @echo off
+                            ${javaHome ? "set \"JAVA_HOME=${javaHome}\"\nset \"PATH=%JAVA_HOME%\\bin;%PATH%\"" : ''}
+                            "${sdkmanager}" "platforms;android-${targetSdk}" --sdk_root="${sdkPath}" 2>&1
+                        """, returnStatus: true)
+                        if (sdkInstallResult == 0) {
+                            echo "[OK] Android SDK platform ${targetSdk} installed"
+                        } else {
+                            echo "[WARN] sdkmanager failed to install Android SDK platform ${targetSdk} (exit ${sdkInstallResult}) — Unity may still build if the platform is already present"
+                        }
                     }
                 } else if (targetSdk == '0' || !targetSdk) {
                     echo "[INFO] AndroidTargetSdkVersion is auto (0) or not set — Unity will use highest installed platform"
