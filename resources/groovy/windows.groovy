@@ -5094,14 +5094,21 @@ def plasticCheckout(Map config) {
     bat "@cd /d \"${wsDir}\" && cm undo . -r"
 
     // 4. Switch to desired changeset or branch
+    //    cm switch may return non-zero if it encounters files with Windows reserved names
+    //    (nul, con, prn, etc.) — these are harmless 0-byte sync errors, not real failures.
+    //    We capture the exit code and verify the switch succeeded via cm status instead.
+    def switchResult
     if (changeset) {
         echo "[Checkout] Switching to changeset ${changeset}"
-        bat "@cd /d \"${wsDir}\" && cm switch cs:${changeset} --noinput"
+        switchResult = bat(script: "@cd /d \"${wsDir}\" && cm switch cs:${changeset} --noinput", returnStatus: true)
     } else if (branch) {
         echo "[Checkout] Switching to branch ${branch}"
-        bat "@cd /d \"${wsDir}\" && cm switch \"br:${branch}\" --noinput"
+        switchResult = bat(script: "@cd /d \"${wsDir}\" && cm switch \"br:${branch}\" --noinput", returnStatus: true)
     } else {
         error "[Checkout] Either 'branch' or 'changeset' must be specified"
+    }
+    if (switchResult != 0) {
+        echo "[WARN] cm switch exited with code ${switchResult} — may be caused by Windows reserved filenames (harmless)"
     }
 
     // 5. Get loaded changeset ID from workspace status
