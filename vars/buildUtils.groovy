@@ -521,6 +521,7 @@ def preflightUnityLicense() { platform.preflightUnityLicense() }
 def extractUnityVersion(String unityProjectPath) { platform.extractUnityVersion(unityProjectPath) }
 def validateUnityInstallation() { platform.validateUnityInstallation() }
 def validateLinuxBuildSupport() { platform.validateLinuxBuildSupport() }
+def validateWindowsIl2CppSupport() { platform.validateWindowsIl2CppSupport() }
 def validateMacOSBuildSupport() { platform.validateMacOSBuildSupport() }
 def validateNintendoSwitchSupport() { platform.validateNintendoSwitchSupport() }
 def checkCacheValidity(String unityProjectPath) { platform.checkCacheValidity(unityProjectPath) }

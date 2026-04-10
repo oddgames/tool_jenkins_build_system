@@ -273,6 +273,15 @@ pipeline {
             }
         }
 
+        stage('Validate Windows IL2CPP') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Validate Windows IL2CPP'
+                    buildUtils.validateWindowsIl2CppSupport()
+                }
+            }
+        }
+
         stage('Calculate Build Version') {
             steps {
                 script {
