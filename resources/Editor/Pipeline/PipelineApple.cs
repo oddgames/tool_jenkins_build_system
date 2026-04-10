@@ -27,6 +27,7 @@ namespace ODDFramework
             PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.iOS, ManagedStrippingLevel.Medium);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.iOS, Il2CppCompilerConfiguration.Release);
             PlayerSettings.SetIl2CppCodeGeneration(NamedBuildTarget.iOS, Il2CppCodeGeneration.OptimizeSpeed);
+            PlayerSettings.SetIl2CppStacktraceInformation(NamedBuildTarget.iOS, Il2CppStacktraceInformation.MethodFileLineNumber);
 
             PlayerSettings.iOS.scriptCallOptimization = ScriptCallOptimizationLevel.SlowAndSafe;
         }
@@ -70,6 +71,7 @@ namespace ODDFramework
             PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.iOS, ManagedStrippingLevel.Medium);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.iOS, Il2CppCompilerConfiguration.Debug);
             PlayerSettings.SetIl2CppCodeGeneration(NamedBuildTarget.iOS, Il2CppCodeGeneration.OptimizeSize);
+            PlayerSettings.SetIl2CppStacktraceInformation(NamedBuildTarget.iOS, Il2CppStacktraceInformation.MethodFileLineNumber);
 
             PlayerSettings.iOS.scriptCallOptimization = ScriptCallOptimizationLevel.SlowAndSafe;
         }

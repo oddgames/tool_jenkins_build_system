@@ -24,6 +24,7 @@ namespace ODDFramework
             PlayerSettings.SetScriptingBackend(NamedBuildTarget.NintendoSwitch, ScriptingImplementation.IL2CPP);
             PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.NintendoSwitch, ManagedStrippingLevel.Minimal);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.NintendoSwitch, Il2CppCompilerConfiguration.Debug);
+            PlayerSettings.SetIl2CppStacktraceInformation(NamedBuildTarget.NintendoSwitch, Il2CppStacktraceInformation.MethodFileLineNumber);
         }
 
         private static void ApplyReleaseSettings()
@@ -44,6 +45,7 @@ namespace ODDFramework
             PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.NintendoSwitch, ManagedStrippingLevel.Minimal);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.NintendoSwitch, Il2CppCompilerConfiguration.Release);
             PlayerSettings.SetIl2CppCodeGeneration(NamedBuildTarget.NintendoSwitch, Il2CppCodeGeneration.OptimizeSpeed);
+            PlayerSettings.SetIl2CppStacktraceInformation(NamedBuildTarget.NintendoSwitch, Il2CppStacktraceInformation.MethodFileLineNumber);
         }
 
         public static void PrepareDebug()

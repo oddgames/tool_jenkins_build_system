@@ -25,6 +25,7 @@ namespace ODDFramework
             PlayerSettings.SetScriptingBackend(NamedBuildTarget.Standalone, ScriptingImplementation.IL2CPP);
             PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.Standalone, ManagedStrippingLevel.Medium);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.Standalone, Il2CppCompilerConfiguration.Debug);
+            PlayerSettings.SetIl2CppStacktraceInformation(NamedBuildTarget.Standalone, Il2CppStacktraceInformation.MethodFileLineNumber);
             PlayerSettings.SetAdditionalIl2CppArgs("--emit-source-mapping");
         }
 
@@ -46,6 +47,7 @@ namespace ODDFramework
             PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.Standalone, ManagedStrippingLevel.High);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.Standalone, Il2CppCompilerConfiguration.Release);
             PlayerSettings.SetIl2CppCodeGeneration(NamedBuildTarget.Standalone, Il2CppCodeGeneration.OptimizeSpeed);
+            PlayerSettings.SetIl2CppStacktraceInformation(NamedBuildTarget.Standalone, Il2CppStacktraceInformation.MethodFileLineNumber);
             PlayerSettings.SetAdditionalIl2CppArgs("");
         }
 

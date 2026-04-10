@@ -88,6 +88,7 @@ namespace ODDFramework
             PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.Android, ManagedStrippingLevel.Medium);
             PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.Android, Il2CppCompilerConfiguration.Release);
             PlayerSettings.SetIl2CppCodeGeneration(NamedBuildTarget.Android, Il2CppCodeGeneration.OptimizeSize);
+            PlayerSettings.SetIl2CppStacktraceInformation(NamedBuildTarget.Android, Il2CppStacktraceInformation.MethodFileLineNumber);
 
             PlayerSettings.Android.minifyRelease = true;
             PlayerSettings.Android.minifyDebug = false;
@@ -96,7 +97,7 @@ namespace ODDFramework
             // Use Zip format so symbols can be uploaded to Crashlytics (IncludeInBundle embeds them in .aab but doesn't create separate file)
             UnityEditor.Android.UserBuildSettings.DebugSymbols.format = Unity.Android.Types.DebugSymbolFormat.Zip;
         }
-        
+
         public static void PrepareDebug()
         {
             Pipeline.Prepare("DEVELOPMENT_BUILD,ODDGAMES_FORCE_ENABLE_ODD_LOGS", () =>
