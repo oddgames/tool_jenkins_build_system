@@ -1527,7 +1527,8 @@ def checkUnityModules(String version, List modules, boolean autoInstall = false)
         'android-open-jdk': 'AndroidPlayer\\OpenJDK',
         'ios': 'iOSSupport',
         'windows-il2cpp': 'WindowsStandaloneSupport\\Variations\\win64_player_nondevelopment_il2cpp',
-        'linux-il2cpp': 'LinuxStandaloneSupport\\Variations\\linux64_player_nondevelopment_il2cpp'
+        'linux-il2cpp': 'LinuxStandaloneSupport\\Variations\\linux64_player_nondevelopment_il2cpp',
+        'linux-mono': 'LinuxStandaloneSupport\\Variations\\linux64_player_nondevelopment_mono'
     ]
 
     echo "[INFO] Checking Unity modules in: ${playbackEngines}"
@@ -1645,7 +1646,8 @@ private def _doInstallUnityModules(String version, List modules) {
         'android-open-jdk': 'AndroidPlayer\\OpenJDK',
         'ios': 'iOSSupport',
         'windows-il2cpp': 'WindowsStandaloneSupport\\Variations\\win64_player_nondevelopment_il2cpp',
-        'linux-il2cpp': 'LinuxStandaloneSupport\\Variations\\linux64_player_nondevelopment_il2cpp'
+        'linux-il2cpp': 'LinuxStandaloneSupport\\Variations\\linux64_player_nondevelopment_il2cpp',
+        'linux-mono': 'LinuxStandaloneSupport\\Variations\\linux64_player_nondevelopment_mono'
     ]
 
     def stillMissing = modules.findAll { module ->
@@ -4112,17 +4114,17 @@ def verifyAndroidJdk(String playbackEngines) {
 }
 
 def validateLinuxBuildSupport() {
-    echo "[INFO] Verifying Linux Build Support (IL2CPP) module installation..."
-    def linuxModuleCheck = checkUnityModules(env.UNITY_VERSION, ['linux-il2cpp'], true)
+    echo "[INFO] Verifying Linux Build Support modules..."
+    def linuxModuleCheck = checkUnityModules(env.UNITY_VERSION, ['linux-il2cpp', 'linux-mono'], true)
 
     if (!linuxModuleCheck.available) {
-        error "[ERROR] Linux Build Support (IL2CPP) is not installed for Unity ${env.UNITY_VERSION}\n" +
-              "Without this module, Unity silently falls back to building Windows executables.\n" +
-              "Install via Unity Hub GUI: Installs > ${env.UNITY_VERSION} > Add Modules > Linux Build Support (IL2CPP)\n" +
-              "Or via Unity Hub CLI: \"Unity Hub.exe\" -- --headless install-modules -v ${env.UNITY_VERSION} -m linux-il2cpp -cm"
+        error "[ERROR] Linux Build Support is not fully installed for Unity ${env.UNITY_VERSION}\n" +
+              "Without these modules, Unity silently falls back to building Windows executables.\n" +
+              "Install via Unity Hub GUI: Installs > ${env.UNITY_VERSION} > Add Modules > Linux Build Support (IL2CPP + Mono)\n" +
+              "Or via Unity Hub CLI: \"Unity Hub.exe\" -- --headless install-modules -v ${env.UNITY_VERSION} -m linux-il2cpp linux-mono -cm"
     }
 
-    echo "[OK] Linux Build Support (IL2CPP) module verified"
+    echo "[OK] Linux Build Support modules verified (IL2CPP + Mono)"
 }
 
 def validateNintendoSwitchSupport() {
