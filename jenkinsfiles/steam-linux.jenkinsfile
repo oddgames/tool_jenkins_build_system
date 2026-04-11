@@ -476,6 +476,9 @@ pipeline {
         }
         always {
             script {
+                buildUtils.collectUnityErrors()
+            }
+            script {
                 if (!params.WARMUP) {
                     buildUtils.finalizeBuild(
                         buildType: params.BUILD_TYPE,

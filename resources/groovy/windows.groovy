@@ -4519,6 +4519,81 @@ def runUnityCommand(Map config) {
     }
 }
 
+/**
+ * Scan the Jenkins console log for Unity errors and exceptions from Prepare/Build stages.
+ * Writes them to unity_errors.log in the artifact path and prints a summary.
+ * Call from a post { always {} } block so it runs even on failure.
+ *
+ * @param stageNames  List of stage names to scan (default: Unity Prepare + Unity Build)
+ */
+def collectUnityErrors(List stageNames = ['Unity Prepare', 'Unity Build']) {
+    def errorPatterns = [
+        ~/\[Error\]/,
+        ~/\[Exception\]/,
+        ~/(?i)error CS\d+/,
+        ~/BUILD FAILED/,
+        ~/InvalidOperationException/,
+        ~/NullReferenceException/,
+        ~/MissingReferenceException/,
+        ~/ArgumentException/,
+        ~/IndexOutOfRangeException/,
+        ~/FileNotFoundException/,
+        ~/TypeLoadException/,
+        ~/ReflectionTypeLoadException/,
+        ~/(?i)Exception:.*at /,
+        ~/Error building Player/,
+        ~/UnityException/,
+        ~/BuildFailedException/,
+    ]
+
+    def allErrors = []
+
+    stageNames.each { stageName ->
+        def stageLog = common.getStageLogsFromRawLog(stageName, 50000)
+        if (!stageLog) return
+
+        def lines = stageLog.readLines()
+        def stageErrors = []
+        for (int i = 0; i < lines.size(); i++) {
+            def line = lines[i]
+            def isError = errorPatterns.any { pattern -> line =~ pattern }
+            if (isError) {
+                stageErrors << line
+                // Grab following lines that look like stack trace continuation (indented or "at " lines)
+                for (int j = i + 1; j < lines.size() && j < i + 20; j++) {
+                    def nextLine = lines[j]
+                    if (nextLine =~ /^\s+(at |--- |UnityEngine\.|UnityEditor\.)/ || nextLine =~ /^\s+\(/) {
+                        stageErrors << nextLine
+                    } else {
+                        break
+                    }
+                }
+            }
+        }
+
+        if (stageErrors) {
+            allErrors << "===== ${stageName} ====="
+            allErrors.addAll(stageErrors)
+            allErrors << ''
+        }
+    }
+
+    if (allErrors) {
+        def errorText = allErrors.join('\n')
+
+        if (env.ARTIFACT_PATH) {
+            writeFile file: "${env.ARTIFACT_PATH}/unity_errors.log", text: errorText
+        }
+
+        echo "========== UNITY ERRORS & EXCEPTIONS =========="
+        echo errorText
+        echo "================================================"
+        echo "[INFO] ${allErrors.findAll { it =~ /\[Error\]|\[Exception\]|Exception:/ }.size()} error/exception lines collected"
+    } else {
+        echo "[OK] No Unity errors or exceptions detected"
+    }
+}
+
 def runUnityTests(Map config) {
     def unityProjectPath = config.unityProjectPath
     def testPlatform = config.testPlatform ?: 'EditMode'

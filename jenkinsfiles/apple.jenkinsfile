@@ -641,6 +641,9 @@ pipeline {
         }
         always {
             script {
+                buildUtils.collectUnityErrors(['Prepare', 'Unity Build'])
+            }
+            script {
                 if (!params.WARMUP) {
                     buildUtils.finalizeBuild(
                         buildType: params.BUILD_TYPE,
