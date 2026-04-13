@@ -62,8 +62,8 @@ pipeline {
         LANG = "en_US.UTF-8"
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-        // GitHub PAT for Unity package downloads (username/password — same credential used for library SCM checkout)
-        GITHUB_TOKEN = credentials('github-pat-token')
+        // GitHub credentials for Unity package downloads and library SCM checkout
+        GITHUB_TOKEN = credentials('github')
     }
 
     options {

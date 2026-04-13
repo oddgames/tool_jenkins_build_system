@@ -2903,36 +2903,35 @@ def preflightWinget() {
 }
 
 /**
- * Configure git to authenticate with GitHub using the PAT from the environment.
+ * Configure git to authenticate with GitHub using credentials from the environment.
  * Two mechanisms for maximum compatibility:
- *   1. git config --global url.insteadOf — rewrites URLs to embed the token
+ *   1. git config --global url.insteadOf — rewrites URLs to embed credentials
  *   2. GIT_ASKPASS script — git calls this to get credentials (works even if
  *      Unity uses its own git or a different HOME)
  * Must be called before Unity opens (Startup stage) so UPM can resolve private packages.
  */
 def configureGitAuth() {
-    def token = env.GITHUB_TOKEN_PSW?.trim() ?: env.GITHUB_TOKEN?.trim()
-    if (!token) {
-        echo "[WARN] No GitHub token available — skipping git auth configuration"
+    def user = env.GITHUB_TOKEN_USR?.trim()
+    def pass = env.GITHUB_TOKEN_PSW?.trim()
+    if (!user || !pass) {
+        echo "[WARN] GitHub credentials not available — skipping git auth configuration"
         return
     }
     echo "[INFO] Configuring git credentials for GitHub..."
 
     // Method 1: url.insteadOf (works for system git)
-    bat script: "@git config --global url.\"https://x-access-token:${token}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true
+    bat script: "@git config --global url.\"https://${user}:${pass}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true
 
     // Method 2: GIT_ASKPASS script (works for any git, including Unity's embedded git)
-    // The script echoes the token for any password prompt, and x-access-token for username prompts
     def askpassPath = "${env.WORKSPACE}\\.git-askpass.bat"
     writeFile file: askpassPath, text: """@echo off
-if "%1"=="" echo x-access-token& exit /b 0
-echo %1 | findstr /i "password" >nul && (echo ${token}& exit /b 0)
-echo x-access-token
+echo %1 | findstr /i "password" >nul && (echo ${pass}& exit /b 0)
+echo ${user}
 """
     env.GIT_ASKPASS = askpassPath
     env.GIT_TERMINAL_PROMPT = '0'
 
-    echo "[OK] Git configured to authenticate with GitHub"
+    echo "[OK] Git configured to authenticate with GitHub as ${user}"
 }
 
 /**
@@ -2945,14 +2944,14 @@ def cleanupGitAuth() {
 }
 
 def preflightGitHubToken() {
-    echo "[INFO] Verifying GitHub PAT credential..."
-    withCredentials([usernamePassword(credentialsId: 'github-pat-token', usernameVariable: 'GH_USER', passwordVariable: 'GH_TOKEN')]) {
-        def status = bat(script: '@git ls-remote https://%GH_USER%:%GH_TOKEN%@github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1', returnStatus: true)
+    echo "[INFO] Verifying GitHub credentials..."
+    withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GH_USER', passwordVariable: 'GH_PASS')]) {
+        def status = bat(script: '@git ls-remote https://%GH_USER%:%GH_PASS%@github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1', returnStatus: true)
         if (status == 0) {
-            echo "[OK] GitHub PAT valid — authenticated as ${env.GH_USER}"
+            echo "[OK] GitHub authenticated as ${env.GH_USER}"
         } else {
-            error "[ERROR] GitHub PAT credential 'github-pat-token' is invalid or expired.\n" +
-                  "Update the credential in Jenkins: Manage Jenkins > Credentials > github-pat-token"
+            error "[ERROR] GitHub credential 'github' is invalid or expired.\n" +
+                  "Update the credential in Jenkins: Manage Jenkins > Credentials > github"
         }
     }
 }

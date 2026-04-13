@@ -59,8 +59,8 @@ pipeline {
         LANG = "en_US.UTF-8"
         PATH = "C:\\Windows\\System32;C:\\Windows\\System32\\WindowsPowerShell\\v1.0;C:\\Ruby32-x64\\bin;C:\\Program Files\\PlasticSCM5\\client;C:\\Program Files\\Git\\bin;${env.LOCALAPPDATA}\\Microsoft\\WindowsApps;${env.PATH}"
 
-        // GitHub PAT for Unity package downloads (username/password — same credential used for library SCM checkout)
-        GITHUB_TOKEN = credentials('github-pat-token')
+        // GitHub credentials for Unity package downloads and library SCM checkout
+        GITHUB_TOKEN = credentials('github')
     }
 
     options {

@@ -71,8 +71,8 @@ pipeline {
         FASTLANE_ITUNES_TRANSPORTER_USE_SHELL_SCRIPT = "1"
         FASTLANE_ITUNES_TRANSPORTER_PATH = "/usr/local/itms"
 
-        // GitHub PAT for Unity package downloads (username/password — same credential used for library SCM checkout)
-        GITHUB_TOKEN = credentials('github-pat-token')
+        // GitHub credentials for Unity package downloads and library SCM checkout
+        GITHUB_TOKEN = credentials('github')
     }
 
     options {
