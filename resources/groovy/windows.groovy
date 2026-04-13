@@ -4386,6 +4386,63 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
     echo "Unity cache cleanup complete"
 }
 
+/**
+ * Extract and print Unity errors/exceptions from the recent console log.
+ * Called inline from runUnityCommand before it throws, so the summary
+ * appears directly in the failed stage's output.
+ */
+def printUnityErrors(int tailLines = 10000) {
+    try {
+        def logLines = currentBuild.rawBuild.getLog(tailLines)
+        def errorPatterns = [
+            ~/\[Error\]/,
+            ~/\[Exception\]/,
+            ~/(?i)error CS\d+/,
+            ~/BUILD FAILED/,
+            ~/Error building Player/,
+            ~/UnityException/,
+            ~/BuildFailedException/,
+            ~/InvalidOperationException/,
+            ~/NullReferenceException/,
+            ~/MissingReferenceException/,
+            ~/ArgumentException/,
+            ~/FileNotFoundException/,
+            ~/TypeLoadException/,
+            ~/(?i)Exception:.*at /,
+        ]
+
+        def errors = []
+        for (int i = 0; i < logLines.size(); i++) {
+            def line = logLines[i]
+            def isError = errorPatterns.any { pattern -> line =~ pattern }
+            if (isError) {
+                errors << line
+                // Grab stack trace continuation lines
+                for (int j = i + 1; j < logLines.size() && j < i + 20; j++) {
+                    def nextLine = logLines[j]
+                    if (nextLine =~ /^\s+(at |--- |UnityEngine\.|UnityEditor\.)/ || nextLine =~ /^\s+\(/) {
+                        errors << nextLine
+                    } else {
+                        break
+                    }
+                }
+            }
+        }
+
+        if (errors) {
+            echo "========== UNITY ERRORS & EXCEPTIONS =========="
+            echo errors.join('\n')
+            echo "================================================"
+
+            if (env.ARTIFACT_PATH) {
+                writeFile file: "${env.ARTIFACT_PATH}/unity_errors.log", text: errors.join('\n')
+            }
+        }
+    } catch (Exception ex) {
+        echo "[DEBUG] printUnityErrors: ${ex.message}"
+    }
+}
+
 def runUnityCommand(Map config) {
     def unityProjectPath = config.unityProjectPath
     def platform = config.platform
@@ -4514,6 +4571,7 @@ def runUnityCommand(Map config) {
                 )
             """
         } else {
+            printUnityErrors()
             error "[ERROR] Unity command failed with exit code ${exitCode}"
         }
     }
