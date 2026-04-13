@@ -2906,15 +2906,18 @@ def preflightWinget() {
  * Configure git to authenticate with GitHub using the PAT from the environment.
  * Uses url.insteadOf to rewrite https://github.com/ URLs to include the token.
  * Must be called before Unity opens (Startup stage) so UPM can resolve private packages.
- * Requires GITHUB_TOKEN_USR and GITHUB_TOKEN_PSW from credentials('github-pat-token').
+ * GitHub PAT auth format: https://x-access-token:TOKEN@github.com/
  */
 def configureGitAuth() {
-    if (!env.GITHUB_TOKEN_PSW?.trim()) {
-        echo "[WARN] GITHUB_TOKEN_PSW not set — skipping git auth configuration"
+    // GITHUB_TOKEN_PSW is set when credential is username/password type
+    // GITHUB_TOKEN is set for both string and username/password types
+    def token = env.GITHUB_TOKEN_PSW?.trim() ?: env.GITHUB_TOKEN?.trim()
+    if (!token) {
+        echo "[WARN] No GitHub token available — skipping git auth configuration"
         return
     }
     echo "[INFO] Configuring git credentials for GitHub..."
-    bat script: "@git config --global url.\"https://${env.GITHUB_TOKEN_USR}:${env.GITHUB_TOKEN_PSW}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true
+    bat script: "@git config --global url.\"https://x-access-token:${token}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true
     echo "[OK] Git configured to authenticate with GitHub"
 }
 
