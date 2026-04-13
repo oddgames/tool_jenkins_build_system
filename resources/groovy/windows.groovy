@@ -2931,17 +2931,10 @@ def cleanupGitAuth() {
 def preflightGitHubToken() {
     echo "[INFO] Verifying GitHub PAT credential..."
     withCredentials([usernamePassword(credentialsId: 'github-pat-token', usernameVariable: 'GH_USER', passwordVariable: 'GH_TOKEN')]) {
-        def status = bat(script: '''@powershell -NoProfile -Command ^
-            try { ^
-                $headers = @{ Authorization = 'token ' + $env:GH_TOKEN; 'User-Agent' = 'Jenkins' }; ^
-                $resp = Invoke-WebRequest -Uri 'https://api.github.com/user' -Headers $headers -UseBasicParsing -TimeoutSec 15; ^
-                $json = $resp.Content | ConvertFrom-Json; ^
-                Write-Host ('[OK] GitHub PAT valid — authenticated as: ' + $json.login); ^
-            } catch { ^
-                Write-Error ('[ERROR] GitHub PAT validation failed: ' + $_.Exception.Message); ^
-                exit 1 ^
-            }''', returnStatus: true)
-        if (status != 0) {
+        def status = bat(script: '@git ls-remote https://%GH_USER%:%GH_TOKEN%@github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1', returnStatus: true)
+        if (status == 0) {
+            echo "[OK] GitHub PAT valid — authenticated as ${env.GH_USER}"
+        } else {
             error "[ERROR] GitHub PAT credential 'github-pat-token' is invalid or expired.\n" +
                   "Update the credential in Jenkins: Manage Jenkins > Credentials > github-pat-token"
         }

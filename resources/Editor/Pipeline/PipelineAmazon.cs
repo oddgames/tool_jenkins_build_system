@@ -167,8 +167,8 @@ namespace ODDFramework
 
         private static string GetOutputPath(string buildType, string extension)
         {
-            // Use VERSION from bundleVersion (includes feature suffix if present)
-            string version = PlayerSettings.bundleVersion;
+            // Use full VERSION env var (includes branch suffix, e.g. 3.94.13640-main)
+            string version = Pipeline.GetVariable("VERSION", PlayerSettings.bundleVersion);
             string filename = $"{Pipeline.OutputPrefix}_{version}_{buildType}_Amazon{extension}";
             return Path.Combine(Pipeline.BuildPath, filename);
         }

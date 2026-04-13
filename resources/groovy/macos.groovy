@@ -1882,17 +1882,10 @@ def cleanupGitAuth() {
 def preflightGitHubToken() {
     echo "[INFO] Verifying GitHub PAT credential..."
     withCredentials([usernamePassword(credentialsId: 'github-pat-token', usernameVariable: 'GH_USER', passwordVariable: 'GH_TOKEN')]) {
-        def status = sh(script: '''
-            resp=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GH_TOKEN" -H "User-Agent: Jenkins" https://api.github.com/user)
-            if [ "$resp" = "200" ]; then
-                user=$(curl -s -H "Authorization: token $GH_TOKEN" -H "User-Agent: Jenkins" https://api.github.com/user | python3 -c "import sys,json; print(json.load(sys.stdin).get('login','unknown'))")
-                echo "[OK] GitHub PAT valid — authenticated as: $user"
-            else
-                echo "[ERROR] GitHub PAT validation failed (HTTP $resp)"
-                exit 1
-            fi
-        ''', returnStatus: true)
-        if (status != 0) {
+        def status = sh(script: 'git ls-remote "https://${GH_USER}:${GH_TOKEN}@github.com/oddgames/tool_jenkins_build_system.git" HEAD >/dev/null 2>&1', returnStatus: true)
+        if (status == 0) {
+            echo "[OK] GitHub PAT valid — authenticated as ${env.GH_USER}"
+        } else {
             error "[ERROR] GitHub PAT credential 'github-pat-token' is invalid or expired.\n" +
                   "Update the credential in Jenkins: Manage Jenkins > Credentials > github-pat-token"
         }
