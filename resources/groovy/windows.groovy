@@ -2904,31 +2904,44 @@ def preflightWinget() {
 
 /**
  * Configure git to authenticate with GitHub using the PAT from the environment.
- * Uses url.insteadOf to rewrite https://github.com/ URLs to include the token.
+ * Two mechanisms for maximum compatibility:
+ *   1. git config --global url.insteadOf — rewrites URLs to embed the token
+ *   2. GIT_ASKPASS script — git calls this to get credentials (works even if
+ *      Unity uses its own git or a different HOME)
  * Must be called before Unity opens (Startup stage) so UPM can resolve private packages.
- * GitHub PAT auth format: https://x-access-token:TOKEN@github.com/
  */
 def configureGitAuth() {
-    // GITHUB_TOKEN_PSW is set when credential is username/password type
-    // GITHUB_TOKEN is set for both string and username/password types
     def token = env.GITHUB_TOKEN_PSW?.trim() ?: env.GITHUB_TOKEN?.trim()
     if (!token) {
         echo "[WARN] No GitHub token available — skipping git auth configuration"
         return
     }
     echo "[INFO] Configuring git credentials for GitHub..."
+
+    // Method 1: url.insteadOf (works for system git)
     bat script: "@git config --global url.\"https://x-access-token:${token}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true
+
+    // Method 2: GIT_ASKPASS script (works for any git, including Unity's embedded git)
+    // The script echoes the token for any password prompt, and x-access-token for username prompts
+    def askpassPath = "${env.WORKSPACE}\\.git-askpass.bat"
+    writeFile file: askpassPath, text: """@echo off
+if "%1"=="" echo x-access-token& exit /b 0
+echo %1 | findstr /i "password" >nul && (echo ${token}& exit /b 0)
+echo x-access-token
+"""
+    env.GIT_ASKPASS = askpassPath
+    env.GIT_TERMINAL_PROMPT = '0'
+
     echo "[OK] Git configured to authenticate with GitHub"
 }
 
 /**
- * Remove the git URL rewrite added by configureGitAuth().
+ * Remove git auth configuration added by configureGitAuth().
  * Called in the post block to avoid leaving credentials on disk.
  */
 def cleanupGitAuth() {
     bat script: '@git config --global --remove-section "url.https://*@github.com/" 2>nul', returnStatus: true
-    // Fallback: unset any insteadOf entries matching github.com
-    bat script: '@powershell -NoProfile -Command "& { $cfg = git config --global --list 2>&1; $cfg | Where-Object { $_ -match ''url\\.https://.*@github\\.com/\\.insteadof'' } | ForEach-Object { $key = ($_ -split ''='')[0]; git config --global --unset $key } }"', returnStatus: true
+    bat script: "@if exist \"${env.WORKSPACE}\\.git-askpass.bat\" del \"${env.WORKSPACE}\\.git-askpass.bat\" 2>nul", returnStatus: true
 }
 
 def preflightGitHubToken() {

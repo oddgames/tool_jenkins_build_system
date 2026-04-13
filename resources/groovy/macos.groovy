@@ -1857,9 +1857,11 @@ def preflightNetwork() {
 
 /**
  * Configure git to authenticate with GitHub using the PAT from the environment.
- * Uses url.insteadOf to rewrite https://github.com/ URLs to include the token.
+ * Two mechanisms for maximum compatibility:
+ *   1. git config --global url.insteadOf — rewrites URLs to embed the token
+ *   2. GIT_ASKPASS script — git calls this to get credentials (works even if
+ *      Unity uses its own git or a different HOME)
  * Must be called before Unity opens (Startup stage) so UPM can resolve private packages.
- * GitHub PAT auth format: https://x-access-token:TOKEN@github.com/
  */
 def configureGitAuth() {
     def token = env.GITHUB_TOKEN_PSW?.trim() ?: env.GITHUB_TOKEN?.trim()
@@ -1868,16 +1870,32 @@ def configureGitAuth() {
         return
     }
     echo "[INFO] Configuring git credentials for GitHub..."
+
+    // Method 1: url.insteadOf (works for system git)
     sh(script: "git config --global url.\"https://x-access-token:${token}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true)
+
+    // Method 2: GIT_ASKPASS script (works for any git, including Unity's embedded git)
+    def askpassPath = "${env.WORKSPACE}/.git-askpass.sh"
+    writeFile file: askpassPath, text: """#!/bin/sh
+case "\$1" in
+    *assword*) echo '${token}' ;;
+    *)         echo 'x-access-token' ;;
+esac
+"""
+    sh "chmod +x '${askpassPath}'"
+    env.GIT_ASKPASS = askpassPath
+    env.GIT_TERMINAL_PROMPT = '0'
+
     echo "[OK] Git configured to authenticate with GitHub"
 }
 
 /**
- * Remove the git URL rewrite added by configureGitAuth().
+ * Remove git auth configuration added by configureGitAuth().
  * Called in the post block to avoid leaving credentials on disk.
  */
 def cleanupGitAuth() {
     sh(script: 'git config --global --get-regexp "url\\.https://.*@github\\.com/" | while read key _; do git config --global --unset "$key"; done', returnStatus: true)
+    sh(script: "rm -f '${env.WORKSPACE}/.git-askpass.sh'", returnStatus: true)
 }
 
 def preflightGitHubToken() {
