@@ -1855,6 +1855,50 @@ def preflightNetwork() {
     """
 }
 
+/**
+ * Configure git to authenticate with GitHub using the PAT from the environment.
+ * Uses url.insteadOf to rewrite https://github.com/ URLs to include the token.
+ * Must be called before Unity opens (Startup stage) so UPM can resolve private packages.
+ * Requires GITHUB_TOKEN_USR and GITHUB_TOKEN_PSW from credentials('github-pat-token').
+ */
+def configureGitAuth() {
+    if (!env.GITHUB_TOKEN_PSW?.trim()) {
+        echo "[WARN] GITHUB_TOKEN_PSW not set — skipping git auth configuration"
+        return
+    }
+    echo "[INFO] Configuring git credentials for GitHub..."
+    sh(script: "git config --global url.\"https://${env.GITHUB_TOKEN_USR}:${env.GITHUB_TOKEN_PSW}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true)
+    echo "[OK] Git configured to authenticate with GitHub"
+}
+
+/**
+ * Remove the git URL rewrite added by configureGitAuth().
+ * Called in the post block to avoid leaving credentials on disk.
+ */
+def cleanupGitAuth() {
+    sh(script: 'git config --global --get-regexp "url\\.https://.*@github\\.com/" | while read key _; do git config --global --unset "$key"; done', returnStatus: true)
+}
+
+def preflightGitHubToken() {
+    echo "[INFO] Verifying GitHub PAT credential..."
+    withCredentials([usernamePassword(credentialsId: 'github-pat-token', usernameVariable: 'GH_USER', passwordVariable: 'GH_TOKEN')]) {
+        def status = sh(script: '''
+            resp=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GH_TOKEN" -H "User-Agent: Jenkins" https://api.github.com/user)
+            if [ "$resp" = "200" ]; then
+                user=$(curl -s -H "Authorization: token $GH_TOKEN" -H "User-Agent: Jenkins" https://api.github.com/user | python3 -c "import sys,json; print(json.load(sys.stdin).get('login','unknown'))")
+                echo "[OK] GitHub PAT valid — authenticated as: $user"
+            else
+                echo "[ERROR] GitHub PAT validation failed (HTTP $resp)"
+                exit 1
+            fi
+        ''', returnStatus: true)
+        if (status != 0) {
+            error "[ERROR] GitHub PAT credential 'github-pat-token' is invalid or expired.\n" +
+                  "Update the credential in Jenkins: Manage Jenkins > Credentials > github-pat-token"
+        }
+    }
+}
+
 def preflightRclone() {
     def rcloneCheck = checkRclone(true)  // auto-install if missing
     if (!rcloneCheck.available) {

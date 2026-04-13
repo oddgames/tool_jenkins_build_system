@@ -61,6 +61,9 @@ pipeline {
         LC_ALL = "en_US.UTF-8"
         LANG = "en_US.UTF-8"
         PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+        // GitHub PAT for Unity package downloads (username/password — same credential used for library SCM checkout)
+        GITHUB_TOKEN = credentials('github-pat-token')
     }
 
     options {
@@ -171,6 +174,15 @@ pipeline {
                         script {
                             env.CURRENT_STAGE = 'Preflight: Network'
                             buildUtils.preflightNetwork()
+                        }
+                    }
+                }
+
+                stage('GitHub') {
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Preflight: GitHub'
+                            buildUtils.preflightGitHubToken()
                         }
                     }
                 }

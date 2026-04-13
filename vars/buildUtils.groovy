@@ -398,6 +398,7 @@ def printScmInfo() { common.printScmInfo() }
 def calculateBuildVersion(int versionCodeBase) { common.calculateBuildVersion(versionCodeBase) }
 
 def startup(String buildType, String paramsBranch) {
+    platform.configureGitAuth()
     common.printBuildInfo(buildType, paramsBranch)
     common.captureBuildUser()
     common.printScmInfo()
@@ -414,8 +415,11 @@ def getFailedNodeId(String stageName) { common.getFailedNodeId(stageName) }
 // DELEGATE TO PLATFORM
 // ============================================================================
 
+def configureGitAuth() { platform.configureGitAuth() }
+def cleanupGitAuth() { platform.cleanupGitAuth() }
 def preflightWinget() { platform.preflightWinget() }
 def preflightNetwork() { platform.preflightNetwork() }
+def preflightGitHubToken() { platform.preflightGitHubToken() }
 def preflightRclone() { platform.preflightRclone() }
 def preflightPlasticSCM() { platform.preflightPlasticSCM() }
 def preflightFastlane() { platform.preflightFastlane() }
@@ -471,6 +475,8 @@ def cleanupSteamStaging() { platform.cleanupSteamStaging() }
  * builds and are never cleaned up automatically.
  */
 def cleanupAtWorkspaces() {
+    platform.cleanupGitAuth()
+
     def ws = env.WORKSPACE
     if (!ws) return
 

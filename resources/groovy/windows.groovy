@@ -2902,6 +2902,52 @@ def preflightWinget() {
     }
 }
 
+/**
+ * Configure git to authenticate with GitHub using the PAT from the environment.
+ * Uses url.insteadOf to rewrite https://github.com/ URLs to include the token.
+ * Must be called before Unity opens (Startup stage) so UPM can resolve private packages.
+ * Requires GITHUB_TOKEN_USR and GITHUB_TOKEN_PSW from credentials('github-pat-token').
+ */
+def configureGitAuth() {
+    if (!env.GITHUB_TOKEN_PSW?.trim()) {
+        echo "[WARN] GITHUB_TOKEN_PSW not set — skipping git auth configuration"
+        return
+    }
+    echo "[INFO] Configuring git credentials for GitHub..."
+    bat script: "@git config --global url.\"https://${env.GITHUB_TOKEN_USR}:${env.GITHUB_TOKEN_PSW}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true
+    echo "[OK] Git configured to authenticate with GitHub"
+}
+
+/**
+ * Remove the git URL rewrite added by configureGitAuth().
+ * Called in the post block to avoid leaving credentials on disk.
+ */
+def cleanupGitAuth() {
+    bat script: '@git config --global --remove-section "url.https://*@github.com/" 2>nul', returnStatus: true
+    // Fallback: unset any insteadOf entries matching github.com
+    bat script: '@powershell -NoProfile -Command "& { $cfg = git config --global --list 2>&1; $cfg | Where-Object { $_ -match ''url\\.https://.*@github\\.com/\\.insteadof'' } | ForEach-Object { $key = ($_ -split ''='')[0]; git config --global --unset $key } }"', returnStatus: true
+}
+
+def preflightGitHubToken() {
+    echo "[INFO] Verifying GitHub PAT credential..."
+    withCredentials([usernamePassword(credentialsId: 'github-pat-token', usernameVariable: 'GH_USER', passwordVariable: 'GH_TOKEN')]) {
+        def status = bat(script: '''@powershell -NoProfile -Command ^
+            try { ^
+                $headers = @{ Authorization = 'token ' + $env:GH_TOKEN; 'User-Agent' = 'Jenkins' }; ^
+                $resp = Invoke-WebRequest -Uri 'https://api.github.com/user' -Headers $headers -UseBasicParsing -TimeoutSec 15; ^
+                $json = $resp.Content | ConvertFrom-Json; ^
+                Write-Host ('[OK] GitHub PAT valid — authenticated as: ' + $json.login); ^
+            } catch { ^
+                Write-Error ('[ERROR] GitHub PAT validation failed: ' + $_.Exception.Message); ^
+                exit 1 ^
+            }''', returnStatus: true)
+        if (status != 0) {
+            error "[ERROR] GitHub PAT credential 'github-pat-token' is invalid or expired.\n" +
+                  "Update the credential in Jenkins: Manage Jenkins > Credentials > github-pat-token"
+        }
+    }
+}
+
 def preflightRclone() {
     def rcloneCheck = checkRclone(true)  // auto-install if missing
     if (!rcloneCheck.available) {
