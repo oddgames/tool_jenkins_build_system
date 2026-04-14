@@ -2946,7 +2946,16 @@ def cleanupGitAuth() {
 def preflightGitHubToken() {
     echo "[INFO] Verifying GitHub credentials..."
     withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GH_USER', passwordVariable: 'GH_PASS')]) {
-        def status = bat(script: '@git ls-remote https://%GH_USER%:%GH_PASS%@github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1', returnStatus: true)
+        // Use GIT_ASKPASS to avoid special characters in URL breaking cmd.exe
+        def askpass = "${env.WORKSPACE}\\.git-preflight-askpass.bat"
+        writeFile file: askpass, text: """@echo off
+echo %1 | findstr /i "password" >nul && (echo %GH_PASS%& exit /b 0)
+echo %GH_USER%
+"""
+        def status = bat(script: """@set GIT_ASKPASS=${askpass}
+@set GIT_TERMINAL_PROMPT=0
+@git ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1""", returnStatus: true)
+        bat script: "@del \"${askpass}\" 2>nul", returnStatus: true
         if (status == 0) {
             echo "[OK] GitHub authenticated as ${env.GH_USER}"
         } else {
