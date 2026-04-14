@@ -1902,14 +1902,17 @@ def cleanupGitAuth() {
 def preflightGitHubToken() {
     echo "[INFO] Verifying GitHub credentials..."
     withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GH_USER', passwordVariable: 'GH_PASS')]) {
-        // Use GIT_ASKPASS to avoid special characters in password breaking shell parsing
+        def user = env.GH_USER
+        def pass = env.GH_PASS
+        // Bake credentials directly into the askpass script (same approach as configureGitAuth).
+        // Using $ENV_VAR shell references doesn't reliably propagate through subprocess chains.
         def askpass = "${env.WORKSPACE}/.git-preflight-askpass.sh"
-        writeFile file: askpass, text: '''#!/bin/sh
-case "$1" in
-    *assword*) printf '%s\\n' "$GH_PASS" ;;
-    *)         printf '%s\\n' "$GH_USER" ;;
+        writeFile file: askpass, text: """#!/bin/sh
+case "\$1" in
+    *assword*) echo '${pass}' ;;
+    *)         echo '${user}' ;;
 esac
-'''
+"""
         sh "chmod +x '${askpass}'"
         def status = sh(script: "GIT_ASKPASS='${askpass}' GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >/dev/null 2>&1", returnStatus: true)
         sh(script: "rm -f '${askpass}'", returnStatus: true)
