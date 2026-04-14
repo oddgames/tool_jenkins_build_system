@@ -2952,6 +2952,9 @@ def preflightGitHubToken() {
 echo %1 | findstr /i "password" >nul && (echo %GH_PASS%& exit /b 0)
 echo %GH_USER%
 """
+        def gitOutput = bat(script: """@set GIT_ASKPASS=${askpass}
+@set GIT_TERMINAL_PROMPT=0
+@git -c credential.helper= ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD 2>&1""", returnStdout: true).trim()
         def status = bat(script: """@set GIT_ASKPASS=${askpass}
 @set GIT_TERMINAL_PROMPT=0
 @git -c credential.helper= ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1""", returnStatus: true)
@@ -2959,14 +2962,16 @@ echo %GH_USER%
         if (status == 0) {
             echo "[OK] GitHub authenticated as ${env.GH_USER}"
         } else {
-            error "[ERROR] GitHub credential 'github' failed to authenticate.\n" +
-                  "The password field MUST be a GitHub Personal Access Token (PAT), not a regular password.\n" +
-                  "GitHub does not accept passwords for git operations.\n\n" +
-                  "To fix:\n" +
-                  "  1. Get the PAT from Keeper (search 'GitHub PAT'), OR generate a new one:\n" +
-                  "     GitHub > Settings > Developer settings > Personal access tokens > Tokens (classic)\n" +
-                  "     > Generate new token > select 'repo' scope\n" +
-                  "  2. Update Jenkins credential: Manage Jenkins > Credentials > 'github'\n" +
+            echo "[DEBUG] git ls-remote exit code: ${status}"
+            echo "[DEBUG] git ls-remote output: ${gitOutput}"
+            error "[ERROR] GitHub credential 'github' failed to authenticate (exit code ${status}).\n" +
+                  "Git output: ${gitOutput}\n\n" +
+                  "If the PAT is valid, check:\n" +
+                  "  - Network connectivity from this build agent\n" +
+                  "  - PAT has 'repo' scope\n" +
+                  "  - PAT is not expired\n" +
+                  "  - Account has access to oddgames/tool_jenkins_build_system\n\n" +
+                  "To update: Manage Jenkins > Credentials > 'github'\n" +
                   "     Username: oddgamesbuilds | Password: <paste PAT here>"
         }
     }
