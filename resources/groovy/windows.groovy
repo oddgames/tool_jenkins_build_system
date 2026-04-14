@@ -2943,39 +2943,6 @@ def cleanupGitAuth() {
     bat script: "@if exist \"${env.WORKSPACE}\\.git-askpass.bat\" del \"${env.WORKSPACE}\\.git-askpass.bat\" 2>nul", returnStatus: true
 }
 
-def preflightGitHubToken() {
-    echo "[INFO] Verifying GitHub credentials..."
-    withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GH_USER', passwordVariable: 'GH_PASS')]) {
-        def user = env.GH_USER
-        def pass = env.GH_PASS
-        // Bake credentials directly into the askpass script (same approach as configureGitAuth).
-        // Using %ENV_VAR% batch references doesn't work because withCredentials env vars
-        // don't reliably propagate through the Jenkins bat → git → askpass subprocess chain.
-        def askpass = "${env.WORKSPACE}\\.git-preflight-askpass.bat"
-        writeFile file: askpass, text: """@echo off
-echo %1 | findstr /i "password" >nul && (echo ${pass}& exit /b 0)
-echo ${user}
-"""
-        def status = bat(script: """@set GIT_ASKPASS=${askpass}
-@set GIT_TERMINAL_PROMPT=0
-@git -c credential.helper= ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1""", returnStatus: true)
-        bat script: "@del \"${askpass}\" 2>nul", returnStatus: true
-        if (status == 0) {
-            echo "[OK] GitHub authenticated as ${user}"
-        } else {
-            error "[ERROR] GitHub credential 'github' failed to authenticate.\n" +
-                  "The password field MUST be a GitHub Personal Access Token (PAT), not a regular password.\n" +
-                  "GitHub does not accept passwords for git operations.\n\n" +
-                  "To fix:\n" +
-                  "  1. Get the PAT from Keeper (search 'GitHub PAT'), OR generate a new one:\n" +
-                  "     GitHub > Settings > Developer settings > Personal access tokens > Tokens (classic)\n" +
-                  "     > Generate new token > select 'repo' scope\n" +
-                  "  2. Update Jenkins credential: Manage Jenkins > Credentials > 'github'\n" +
-                  "     Username: oddgamesbuilds | Password: <paste PAT here>"
-        }
-    }
-}
-
 def preflightRclone() {
     def rcloneCheck = checkRclone(true)  // auto-install if missing
     if (!rcloneCheck.available) {

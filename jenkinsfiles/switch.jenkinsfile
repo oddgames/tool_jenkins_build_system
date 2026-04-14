@@ -190,15 +190,6 @@ pipeline {
                     }
                 }
 
-                stage('GitHub') {
-                    steps {
-                        script {
-                            env.CURRENT_STAGE = 'Preflight: GitHub'
-                            buildUtils.preflightGitHubToken()
-                        }
-                    }
-                }
-
                 stage('Jenkins Permissions') {
                     steps {
                         script {

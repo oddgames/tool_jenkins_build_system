@@ -1899,39 +1899,6 @@ def cleanupGitAuth() {
     sh(script: "rm -f '${env.WORKSPACE}/.git-askpass.sh'", returnStatus: true)
 }
 
-def preflightGitHubToken() {
-    echo "[INFO] Verifying GitHub credentials..."
-    withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GH_USER', passwordVariable: 'GH_PASS')]) {
-        def user = env.GH_USER
-        def pass = env.GH_PASS
-        // Bake credentials directly into the askpass script (same approach as configureGitAuth).
-        // Using $ENV_VAR shell references doesn't reliably propagate through subprocess chains.
-        def askpass = "${env.WORKSPACE}/.git-preflight-askpass.sh"
-        writeFile file: askpass, text: """#!/bin/sh
-case "\$1" in
-    *assword*) echo '${pass}' ;;
-    *)         echo '${user}' ;;
-esac
-"""
-        sh "chmod +x '${askpass}'"
-        def status = sh(script: "GIT_ASKPASS='${askpass}' GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >/dev/null 2>&1", returnStatus: true)
-        sh(script: "rm -f '${askpass}'", returnStatus: true)
-        if (status == 0) {
-            echo "[OK] GitHub authenticated as ${env.GH_USER}"
-        } else {
-            error "[ERROR] GitHub credential 'github' failed to authenticate.\n" +
-                  "The password field MUST be a GitHub Personal Access Token (PAT), not a regular password.\n" +
-                  "GitHub does not accept passwords for git operations.\n\n" +
-                  "To fix:\n" +
-                  "  1. Get the PAT from Keeper (search 'GitHub PAT'), OR generate a new one:\n" +
-                  "     GitHub > Settings > Developer settings > Personal access tokens > Tokens (classic)\n" +
-                  "     > Generate new token > select 'repo' scope\n" +
-                  "  2. Update Jenkins credential: Manage Jenkins > Credentials > 'github'\n" +
-                  "     Username: oddgamesbuilds | Password: <paste PAT here>"
-        }
-    }
-}
-
 def preflightRclone() {
     def rcloneCheck = checkRclone(true)  // auto-install if missing
     if (!rcloneCheck.available) {

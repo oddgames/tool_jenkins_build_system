@@ -419,7 +419,6 @@ def configureGitAuth() { platform.configureGitAuth() }
 def cleanupGitAuth() { platform.cleanupGitAuth() }
 def preflightWinget() { platform.preflightWinget() }
 def preflightNetwork() { platform.preflightNetwork() }
-def preflightGitHubToken() { platform.preflightGitHubToken() }
 def preflightRclone() { platform.preflightRclone() }
 def preflightPlasticSCM() { platform.preflightPlasticSCM() }
 def preflightFastlane() { platform.preflightFastlane() }
