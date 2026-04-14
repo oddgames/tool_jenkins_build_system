@@ -1911,7 +1911,7 @@ case "$1" in
 esac
 '''
         sh "chmod +x '${askpass}'"
-        def status = sh(script: "GIT_ASKPASS='${askpass}' GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >/dev/null 2>&1", returnStatus: true)
+        def status = sh(script: "GIT_ASKPASS='${askpass}' GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >/dev/null 2>&1", returnStatus: true)
         sh(script: "rm -f '${askpass}'", returnStatus: true)
         if (status == 0) {
             echo "[OK] GitHub authenticated as ${env.GH_USER}"

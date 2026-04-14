@@ -2954,7 +2954,7 @@ echo %GH_USER%
 """
         def status = bat(script: """@set GIT_ASKPASS=${askpass}
 @set GIT_TERMINAL_PROMPT=0
-@git ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1""", returnStatus: true)
+@git -c credential.helper= ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >nul 2>&1""", returnStatus: true)
         bat script: "@del \"${askpass}\" 2>nul", returnStatus: true
         if (status == 0) {
             echo "[OK] GitHub authenticated as ${env.GH_USER}"
