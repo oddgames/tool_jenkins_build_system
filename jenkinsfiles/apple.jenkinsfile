@@ -20,6 +20,7 @@
  *   apple-api-key          - File credential containing App Store Connect API key JSON
  *   rclone                 - File credential containing rclone.conf
  *   google-play-json       - File credential for Firebase Crashlytics symbol upload (optional, requires Firebase Crashlytics Admin role)
+ *   github                 - Username/password for GitHub (username + PAT, not password)
  *   slack-token            - Secret text for Slack build notifications (optional)
  *
  * Optional Jenkins Environment Variables:

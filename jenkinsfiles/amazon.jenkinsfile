@@ -24,6 +24,7 @@
  *   rclone                - File credential containing rclone.conf
  *   amazon-client-id      - Secret text for Amazon API client ID
  *   amazon-client-secret  - Secret text for Amazon API client secret
+ *   github                - Username/password for GitHub (username + PAT, not password)
  *   slack-token           - Secret text for Slack build notifications (optional)
  */
 

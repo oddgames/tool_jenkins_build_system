@@ -14,6 +14,7 @@
  *   unity-credentials     - Username/password for Unity license
  *   switch-credentials    - Username/password for Nintendo Developer Portal
  *   rclone                - File credential containing rclone.conf
+ *   github                - Username/password for GitHub (username + PAT, not password)
  *   slack-token           - Secret text for Slack build notifications (optional)
  *
  * Unity Project Requirements:

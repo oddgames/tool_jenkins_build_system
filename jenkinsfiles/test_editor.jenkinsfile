@@ -15,6 +15,7 @@
  *
  * Required Jenkins Credentials:
  *   unity-credentials     - Username/password for Unity license
+ *   github                - Username/password for GitHub (username + PAT, not password)
  *   slack-token           - Secret text for Slack build notifications (optional)
  */
 

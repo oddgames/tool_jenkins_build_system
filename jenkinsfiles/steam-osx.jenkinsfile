@@ -19,6 +19,7 @@
  *   unity-credentials     - Username/password for Unity license
  *   steam-credentials     - Username/password for Steam upload
  *   rclone                - File credential containing rclone.conf
+ *   github                - Username/password for GitHub (username + PAT, not password)
  *   slack-token           - Secret text for Slack build notifications (optional)
  */
 

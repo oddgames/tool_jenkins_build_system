@@ -22,6 +22,7 @@
  *   ${CREDENTIAL_KEYALIAS_PASS}  - Secret text for key alias password
  *   rclone                       - File credential containing rclone.conf
  *   google-play-json             - File credential containing Google Play service account JSON
+ *   github                       - Username/password for GitHub (username + PAT, not password)
  *   slack-token                  - Secret text for Slack build notifications (optional)
  */
 
