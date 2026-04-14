@@ -1902,7 +1902,17 @@ def cleanupGitAuth() {
 def preflightGitHubToken() {
     echo "[INFO] Verifying GitHub credentials..."
     withCredentials([usernamePassword(credentialsId: 'github', usernameVariable: 'GH_USER', passwordVariable: 'GH_PASS')]) {
-        def status = sh(script: 'git ls-remote "https://${GH_USER}:${GH_PASS}@github.com/oddgames/tool_jenkins_build_system.git" HEAD >/dev/null 2>&1', returnStatus: true)
+        // Use GIT_ASKPASS to avoid special characters in password breaking shell parsing
+        def askpass = "${env.WORKSPACE}/.git-preflight-askpass.sh"
+        writeFile file: askpass, text: '''#!/bin/sh
+case "$1" in
+    *assword*) printf '%s\\n' "$GH_PASS" ;;
+    *)         printf '%s\\n' "$GH_USER" ;;
+esac
+'''
+        sh "chmod +x '${askpass}'"
+        def status = sh(script: "GIT_ASKPASS='${askpass}' GIT_TERMINAL_PROMPT=0 git ls-remote https://github.com/oddgames/tool_jenkins_build_system.git HEAD >/dev/null 2>&1", returnStatus: true)
+        sh(script: "rm -f '${askpass}'", returnStatus: true)
         if (status == 0) {
             echo "[OK] GitHub authenticated as ${env.GH_USER}"
         } else {
