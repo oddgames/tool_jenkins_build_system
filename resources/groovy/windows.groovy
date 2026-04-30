@@ -5252,11 +5252,12 @@ def plasticCheckout(Map config) {
     def repSpec = config.repSpec ?: env.PLASTIC_REPSPEC
     def wsDir = "${env.WORKSPACE}\\plastic"
 
-    // 1. Ensure Plastic workspace exists
-    def hasWorkspace = bat(script: "@if exist \"${wsDir}\\.plastic\" (echo true) else (echo false)", returnStdout: true).trim()
+    // 1. Ensure Plastic workspace exists and is registered
+    def hasWorkspace = bat(script: "@if exist \"${wsDir}\\.plastic\" (cd /d \"${wsDir}\" && cm status >nul 2>&1 && echo true || echo false) else (echo false)", returnStdout: true).trim()
 
     if (hasWorkspace != 'true') {
         echo "[Checkout] Creating new Plastic workspace at ${wsDir}"
+        bat "@if exist \"${wsDir}\\.plastic\" rmdir /s /q \"${wsDir}\\.plastic\" 2>nul"
         bat "@if not exist \"${wsDir}\" mkdir \"${wsDir}\""
         def safeName = env.JOB_NAME.replaceAll('[^a-zA-Z0-9_-]', '_')
         def wsName = "ci_${env.NODE_NAME}_${safeName}"

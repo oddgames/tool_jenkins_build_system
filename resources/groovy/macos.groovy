@@ -3561,11 +3561,12 @@ def plasticCheckout(Map config) {
     def repSpec = config.repSpec ?: env.PLASTIC_REPSPEC
     def wsDir = "${env.WORKSPACE}/plastic"
 
-    // 1. Ensure Plastic workspace exists
-    def hasWorkspace = sh(script: "[ -d '${wsDir}/.plastic' ] && echo true || echo false", returnStdout: true).trim()
+    // 1. Ensure Plastic workspace exists and is registered
+    def hasWorkspace = sh(script: "[ -d '${wsDir}/.plastic' ] && cd '${wsDir}' && cm status > /dev/null 2>&1 && echo true || echo false", returnStdout: true).trim()
 
     if (hasWorkspace != 'true') {
         echo "[Checkout] Creating new Plastic workspace at ${wsDir}"
+        sh "rm -rf '${wsDir}/.plastic' 2>/dev/null || true"  // remove orphaned .plastic if unregistered
         sh "mkdir -p '${wsDir}'"
         def safeName = env.JOB_NAME.replaceAll('[^a-zA-Z0-9_-]', '_')
         def wsName = "ci_${env.NODE_NAME}_${safeName}"
