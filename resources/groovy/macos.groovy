@@ -3565,8 +3565,6 @@ def plasticCheckout(Map config) {
     def hasWorkspace = sh(script: "[ -d '${wsDir}/.plastic' ] && cd '${wsDir}' && cm status > /dev/null 2>&1 && echo true || echo false", returnStdout: true).trim()
 
     if (hasWorkspace != 'true') {
-        echo "[Checkout] Creating new Plastic workspace at ${wsDir}"
-        sh "rm -rf '${wsDir}/.plastic' 2>/dev/null || true"  // remove orphaned .plastic if unregistered
         sh "mkdir -p '${wsDir}'"
         def safeName = env.JOB_NAME.replaceAll('[^a-zA-Z0-9_-]', '_')
         def wsName = "ci_${env.NODE_NAME}_${safeName}"
@@ -3576,10 +3574,16 @@ def plasticCheckout(Map config) {
 
         def createResult = sh(script: "cm workspace create '${wsName}' '${wsDir}' '${repSpec}'", returnStatus: true)
         if (createResult != 0) {
-            // Name may already be registered from a previous agent - retry with executor suffix
-            wsName = "${wsName}_${env.EXECUTOR_NUMBER ?: '0'}"
-            _deregisterStalePlasticWorkspace(wsName)
-            sh "cm workspace create '${wsName}' '${wsDir}' '${repSpec}'"
+            // .plastic exists but unregistered — wipe it and try fresh
+            echo "[Checkout] workspace create failed (orphaned .plastic?) — removing and retrying"
+            sh "rm -rf '${wsDir}/.plastic'"
+            def retryResult = sh(script: "cm workspace create '${wsName}' '${wsDir}' '${repSpec}'", returnStatus: true)
+            if (retryResult != 0) {
+                // Name conflict from previous agent - retry with executor suffix
+                wsName = "${wsName}_${env.EXECUTOR_NUMBER ?: '0'}"
+                _deregisterStalePlasticWorkspace(wsName)
+                sh "cm workspace create '${wsName}' '${wsDir}' '${repSpec}'"
+            }
         }
     }
 

@@ -5256,8 +5256,6 @@ def plasticCheckout(Map config) {
     def hasWorkspace = bat(script: "@if exist \"${wsDir}\\.plastic\" (cd /d \"${wsDir}\" && cm status >nul 2>&1 && echo true || echo false) else (echo false)", returnStdout: true).trim()
 
     if (hasWorkspace != 'true') {
-        echo "[Checkout] Creating new Plastic workspace at ${wsDir}"
-        bat "@if exist \"${wsDir}\\.plastic\" rmdir /s /q \"${wsDir}\\.plastic\" 2>nul"
         bat "@if not exist \"${wsDir}\" mkdir \"${wsDir}\""
         def safeName = env.JOB_NAME.replaceAll('[^a-zA-Z0-9_-]', '_')
         def wsName = "ci_${env.NODE_NAME}_${safeName}"
@@ -5266,6 +5264,12 @@ def plasticCheckout(Map config) {
         _deregisterStalePlasticWorkspace(wsName)
 
         def createResult = bat(script: "@cm workspace create \"${wsName}\" \"${wsDir}\" \"${repSpec}\"", returnStatus: true)
+        if (createResult != 0) {
+            // .plastic may exist but be unregistered — wipe it and retry with same name
+            echo "[Checkout] workspace create failed (orphaned .plastic?) — removing and retrying"
+            bat "@if exist \"${wsDir}\\.plastic\" rmdir /s /q \"${wsDir}\\.plastic\""
+            createResult = bat(script: "@cm workspace create \"${wsName}\" \"${wsDir}\" \"${repSpec}\"", returnStatus: true)
+        }
         if (createResult != 0) {
             // Name may already be registered from a previous agent - retry with executor suffix
             wsName = "${wsName}_${env.EXECUTOR_NUMBER ?: '0'}"
