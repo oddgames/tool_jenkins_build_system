@@ -379,21 +379,6 @@ pipeline {
             }
         }
 
-        stage('Local Share') {
-            when {
-                expression { !params.WARMUP }
-            }
-            steps {
-                script {
-                    env.CURRENT_STAGE = 'Local Share'
-                    buildUtils.uploadToLocalShare(
-                        buildPath: "${env.BUILD_PATH}\\output",
-                        buildType: params.BUILD_TYPE
-                    )
-                }
-            }
-        }
-
         stage('Upload Notification') {
             when {
                 expression { !params.WARMUP }
@@ -405,7 +390,7 @@ pipeline {
                         appIcon: env.APP_ICON,
                         branch: env.BRANCH,
                         changesetId: env.CHANGESET_ID,
-                        uploads: ['gdrive']
+                        uploads: ['local', 'gdrive']
                     )
                 }
             }
@@ -414,6 +399,21 @@ pipeline {
         stage('Parallel Post-Build') {
             failFast false
             parallel {
+                stage('Local Share') {
+                    when {
+                        expression { !params.WARMUP }
+                    }
+                    steps {
+                        script {
+                            env.CURRENT_STAGE = 'Local Share'
+                            buildUtils.uploadToLocalShare(
+                                buildPath: "${env.BUILD_PATH}\\output",
+                                buildType: params.BUILD_TYPE
+                            )
+                        }
+                    }
+                }
+
                 stage('Unity Data Tool') {
                     steps {
                         script {

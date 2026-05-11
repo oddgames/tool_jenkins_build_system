@@ -321,9 +321,15 @@ def seedSteamCache(Map config = [:]) {
             script: """@powershell -NoProfile -Command "if (Test-Path '${versionsPath}') { Get-ChildItem -Path '${versionsPath}' -Directory | Sort-Object LastWriteTime -Descending | ForEach-Object { \$hasCache = Test-Path (Join-Path \$_.FullName 'steam_cache'); \$hasProps = Test-Path (Join-Path \$_.FullName 'steam_cache.properties'); \$props = ''; if (\$hasProps) { \$props = (Get-Content (Join-Path \$_.FullName 'steam_cache.properties') -Raw).Trim() -replace '\\r?\\n', ' | ' }; Write-Output ('{0}  cache={1}  props={2}  [{3}]' -f \$_.Name, \$hasCache, \$hasProps, \$props) } } else { Write-Output '(directory does not exist)' }" """,
             returnStdout: true
         ).trim()
-        echo "[DEBUG] Available versions:"
-        for (line in dirListing.split('\r?\n')) {
-            if (line.trim()) echo "[DEBUG]   ${line.trim()}"
+        def versionLines = dirListing
+            .split('\r?\n')
+            .collect { it.trim() }
+            .findAll { it }
+
+        if (versionLines) {
+            echo "[DEBUG] Available versions:\n[DEBUG]   ${versionLines.join('\n[DEBUG]   ')}"
+        } else {
+            echo "[DEBUG] Available versions: (none)"
         }
     } catch (Exception e) {
         echo "[DEBUG] Could not list share contents: ${e.message}"
