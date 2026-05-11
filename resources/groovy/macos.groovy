@@ -2215,10 +2215,11 @@ def archiveXcodeProject(Map config) {
             exit 1
         fi
 
-        if grep -q "error:" "${logPath}" && ! grep -q "0 errors generated" "${logPath}"; then
+        # Match xcodebuild error format ('^error:' or '<path>: error:'), not arbitrary 'error:'
+        # substrings in script-phase output like curl's 'returned error: 400'.
+        if grep -qE '(^|: )error:' "${logPath}" && ! grep -q "0 errors generated" "${logPath}"; then
             echo "[ERROR] Archive completed with errors - see log for details"
-            # Show the errors
-            grep -A2 "error:" "${logPath}" | head -20
+            grep -E '(^|: )error:' -A2 "${logPath}" | head -20
             exit 1
         fi
 
