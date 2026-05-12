@@ -3845,6 +3845,9 @@ def uploadToLocalShare(Map config) {
     }
 }
 
+// No-op on macOS; cleanup runs on the Windows agent that owns the share.
+def cleanupLocalShare(String sharePath = null) { }
+
 def uploadToTestFlight(Map config) {
     def ipaPath = config.ipaPath
     def apiKeyId = config.apiKeyId

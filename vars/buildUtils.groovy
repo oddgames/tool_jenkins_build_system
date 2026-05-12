@@ -405,6 +405,8 @@ def startup(String buildType, String paramsBranch) {
     common.resolveCacheServer()
     env.CHANGE_HISTORY = platform.getPlasticChangeHistory(env.PLASTICSCM_BRANCH, 3, env.PLASTICSCM_CHANGESET_ID)
     common.addChangeHistorySummary(env.CHANGE_HISTORY)
+    // Fire-and-forget; runs in background so build proceeds immediately.
+    try { platform.cleanupLocalShare() } catch (Exception e) { echo "[WARNING] Local share cleanup spawn failed: ${e.message}" }
 }
 
 def getSlackMention(String userName, String userEmail) { common.getSlackMention(userName, userEmail) }
@@ -547,6 +549,7 @@ def plasticCheckout(Map config) { platform.plasticCheckout(config) }
 def convertAabToApk(Map config) { platform.convertAabToApk(config) }
 def uploadToGoogleDrive(Map config) { platform.uploadToGoogleDrive(config) }
 def uploadToLocalShare(Map config) { platform.uploadToLocalShare(config) }
+def cleanupLocalShare(String sharePath = null) { platform.cleanupLocalShare(sharePath) }
 def uploadToGCS(Map config) { platform.uploadToGCS(config) }
 def amazonUpload(Map config) { platform.amazonUpload(config) }
 def uploadToGooglePlay(Map config) { platform.uploadToGooglePlay(config) }

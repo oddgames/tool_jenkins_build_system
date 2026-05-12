@@ -5754,58 +5754,55 @@ def uploadToLocalShare(Map config) {
     """
 
     common.updateUploadStatus('local', 'done')
-
-    // Run cleanup in background (non-fatal)
-    try {
-        cleanupLocalShare(sharePath)
-    } catch (Exception e) {
-        echo "[WARNING] Local share cleanup failed: ${e.message}"
-    }
 }
 
+// Fire-and-forget cleanup. Writes a .ps1 to the workspace and launches it
+// detached so the build doesn't wait. Output goes to a log file under the
+// share root so it can be inspected after the fact.
 def cleanupLocalShare(String sharePath = null) {
     sharePath = sharePath ?: env.LOCAL_SHARE_PATH ?: '\\\\odd-jenkins\\builds'
-    def maxBytes = 1099511627776 // 1 TB
+    def maxBytes = 1099511627776L // 1 TB
+    def logPath = "${sharePath}\\_cleanup.log"
+    def scriptPath = "${env.WORKSPACE}\\_cleanup_local_share.ps1"
 
-    echo "[INFO] Checking local share usage: ${sharePath}"
+    def psScript = """
+\$ErrorActionPreference = 'SilentlyContinue'
+\$maxBytes = ${maxBytes}
+\$sharePath = '${sharePath}'
+\$logPath = '${logPath}'
+function Log(\$msg) {
+    \$ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -Path \$logPath -Value "[\$ts] \$msg"
+}
+Log "[INFO] Checking local share usage: \$sharePath"
+\$size = (Get-ChildItem -Path \$sharePath -Recurse -File | Measure-Object -Property Length -Sum).Sum
+if (\$size -eq \$null) { \$size = 0 }
+\$gb = '{0:N1}' -f (\$size / 1073741824)
+Log "[INFO] Usage: \$gb GB / 1024 GB"
+if (\$size -le \$maxBytes) { Log '[INFO] Within limits, no cleanup needed'; return }
+Log '[INFO] Share exceeds 1 TB, cleaning up oldest builds'
+\$folders = Get-ChildItem -Path \$sharePath -Directory -Recurse -Depth 2 |
+    Where-Object { \$_.GetFiles().Count -gt 0 -or \$_.GetDirectories().Count -gt 0 } |
+    Sort-Object LastWriteTime
+foreach (\$folder in \$folders) {
+    \$cur = (Get-ChildItem -Path \$sharePath -Recurse -File | Measure-Object -Property Length -Sum).Sum
+    if (\$cur -le \$maxBytes) { Log '[INFO] Share is now within limits'; break }
+    Log "[INFO] Deleting: \$(\$folder.FullName)"
+    Remove-Item -Path \$folder.FullName -Recurse -Force
+}
+""".stripIndent()
 
-    def result = bat(
-        script: """@powershell -NoProfile -Command "\$size = (Get-ChildItem -Path '${sharePath}' -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum; if (\$size -eq \$null) { \$size = 0 }; Write-Output \$size" """,
-        returnStdout: true
-    ).trim()
-
-    def totalBytes = 0L
     try {
-        totalBytes = result as Long
+        writeFile file: '_cleanup_local_share.ps1', text: psScript
+        echo "[INFO] Spawning detached local share cleanup (log: ${logPath})"
+        bat """
+            @echo off
+            net use "${sharePath}" /user:BUILD build /persistent:no 2>nul
+            powershell -NoProfile -Command "Start-Process powershell -ArgumentList '-NoProfile','-WindowStyle','Hidden','-File','${scriptPath}' -WindowStyle Hidden"
+        """
     } catch (Exception e) {
-        echo "[WARNING] Could not determine share size: ${result}"
-        return
+        echo "[WARNING] Could not spawn local share cleanup: ${e.message}"
     }
-
-    def totalGB = String.format("%.1f", totalBytes / 1073741824.0)
-    echo "[INFO] Local share usage: ${totalGB} GB / 1024 GB"
-
-    if (totalBytes <= maxBytes) {
-        echo "[INFO] Share is within limits, no cleanup needed"
-        return
-    }
-
-    echo "[INFO] Share exceeds 1 TB, cleaning up oldest builds..."
-
-    // Get version folders sorted by last-write-time (oldest first) and delete until under limit
-    bat """
-        @powershell -NoProfile -Command "\
-            \$maxBytes = ${maxBytes}; \
-            \$sharePath = '${sharePath}'; \
-            \$folders = Get-ChildItem -Path \$sharePath -Directory -Recurse -Depth 2 | Where-Object { \$_.GetFiles().Count -gt 0 -or \$_.GetDirectories().Count -gt 0 } | Sort-Object LastWriteTime; \
-            foreach (\$folder in \$folders) { \
-                \$currentSize = (Get-ChildItem -Path \$sharePath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum; \
-                if (\$currentSize -le \$maxBytes) { Write-Output '[INFO] Share is now within limits'; break }; \
-                Write-Output ('[INFO] Deleting: ' + \$folder.FullName); \
-                Remove-Item -Path \$folder.FullName -Recurse -Force -ErrorAction SilentlyContinue; \
-            } \
-        "
-    """
 }
 
 def uploadToGCS(Map config) {
