@@ -50,6 +50,7 @@ pipeline {
             visibleItemCount: 13,
             description: 'Clean Unity cache dirs before build (select multiple). Verify Workspace=Force re-check all tracked files against server. Clear Library=Delete entire Library folder. Clear Workspace=Wipe entire Jenkins workspace and start from scratch. Force Preflight=Re-run all preflight checks even if they passed recently'
         )
+        booleanParam(name: 'FORCE_UPLOAD', defaultValue: false, description: 'Upload to store (auto for Release on /main)')
         booleanParam(name: 'WARMUP', defaultValue: false, description: 'Cache-warming build: runs full build but skips uploads and notifications')
     }
 
@@ -369,12 +370,14 @@ pipeline {
             }
             steps {
                 script {
+                    def uploads = ['local', 'gdrive']
+                    if ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) uploads << 'store'
                     buildUtils.sendUploadNotification(
                         buildType: params.BUILD_TYPE,
                         appIcon: env.APP_ICON,
                         branch: env.BRANCH,
                         changesetId: env.CHANGESET_ID,
-                        uploads: ['local', 'gdrive']
+                        uploads: uploads
                     )
                 }
             }
@@ -429,7 +432,7 @@ pipeline {
 
                 stage('Amazon Upload') {
                     when {
-                        expression { !params.WARMUP }
+                        expression { !params.WARMUP && ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) }
                     }
                     steps {
                         script {

@@ -6168,9 +6168,11 @@ for %%f in ("${buildPath}\\*.apk") do (
     bat script: "@del \"${scriptPath}\" 2>nul", returnStatus: true
 
     if (status != 0) {
+        common.updateUploadStatus('store', 'failed')
         error "[Amazon] Upload failed (exit code ${status})"
     }
 
+    common.updateUploadStatus('store', 'done')
     echo "[Amazon] Upload complete — check Amazon Developer Console to review and commit"
 }
 
