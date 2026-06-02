@@ -4338,7 +4338,7 @@ def purgeWorkspace(String cleanCache) {
 
 /**
  * Library cache dirs that get per-branch isolation via NTFS junctions into a persistent
- * store under %USERPROFILE%\.buildtools\unitycache\<job>\<branch>. These are the expensive
+ * store under %USERPROFILE%/.buildtools/unitycache/<job>/<branch>. These are the expensive
  * content-addressed build caches — keeping one copy per branch means switching branches just
  * repoints the junction instead of thrashing (and rebuilding) the other branch's cache.
  * The map key is the CLEAN_CACHE token; the value is the actual Library subfolder name.
