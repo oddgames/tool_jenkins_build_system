@@ -3925,13 +3925,11 @@ def validateUnityInstallation() {
     }
 
     // Verify IL2CPP support for platforms that require it
-    // Switch always uses IL2CPP; Android/Amazon use IL2CPP for Release only.
-    // Debug and QA both use the Mono backend, so they don't need IL2CPP/NDK.
+    // Switch always uses IL2CPP; all other platforms use IL2CPP for Release builds
     def il2cppAlways = ['Switch']
     def il2cppRelease = ['Android', 'Amazon']
-    def monoBuildTypes = ['Debug', 'QA']
     def needsIl2cpp = (env.PLATFORM in il2cppAlways) ||
-                      (env.PLATFORM in il2cppRelease && !(env.BUILD_TYPE in monoBuildTypes))
+                      (env.PLATFORM in il2cppRelease && env.BUILD_TYPE != 'Debug')
 
     if (needsIl2cpp) {
         verifyIl2cppSupport(playbackEngines)

@@ -709,7 +709,7 @@ def sendSlackBuildNotification(Map config) {
     ]
     def storeIcon = storeIcons[platform] ?: storeIcons['Android']
     def osIcon = osIcons[platform]
-    def buildTypeIcon = [Debug: ':wrench:', QA: ':mag:', Alpha: ':test_tube:', Release: ':rocket:', EditorTest: ':test_tube:', PlayTest: ':test_tube:'][buildType] ?: ''
+    def buildTypeIcon = [Debug: ':wrench:', Alpha: ':test_tube:', Release: ':rocket:', EditorTest: ':test_tube:', PlayTest: ':test_tube:'][buildType] ?: ''
     def color = colorMap[status] ?: 'warning'
     def emoji = emojiMap[status] ?: ''
     def statusText = statusTextMap[status] ?: ''

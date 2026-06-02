@@ -2220,8 +2220,7 @@ def archiveXcodeProject(Map config) {
     def xcodePath = config.xcodePath
     def archivePath = config.archivePath
     def logPath = config.logPath ?: "${env.ARTIFACT_PATH}/xcodebuild_archive.log"
-    // QA uses the Debug Xcode configuration for a faster archive compile (like Debug)
-    def configuration = config.configuration ?: (env.BUILD_TYPE in ['Debug', 'QA'] ? 'Debug' : 'Release')
+    def configuration = config.configuration ?: (env.BUILD_TYPE == 'Debug' ? 'Debug' : 'Release')
 
     echo "[INFO] Xcode archive configuration: ${configuration}"
 
@@ -2751,13 +2750,11 @@ def validateUnityInstallation() {
     }
 
     // Verify IL2CPP support for platforms that require it
-    // iOS and Switch always use IL2CPP; Android/Amazon use IL2CPP for Release only.
-    // Android Debug and QA both use the Mono backend, so they don't need IL2CPP/NDK.
+    // iOS and Switch always use IL2CPP; other platforms use IL2CPP for Release builds
     def il2cppAlways = ['iOS', 'StandaloneOSX', 'Switch']
     def il2cppRelease = ['Android', 'Amazon']
-    def monoBuildTypes = ['Debug', 'QA']
     def needsIl2cpp = (env.PLATFORM in il2cppAlways) ||
-                      (env.PLATFORM in il2cppRelease && !(env.BUILD_TYPE in monoBuildTypes))
+                      (env.PLATFORM in il2cppRelease && env.BUILD_TYPE != 'Debug')
 
     if (needsIl2cpp) {
         verifyIl2cppSupport(playbackEngines)

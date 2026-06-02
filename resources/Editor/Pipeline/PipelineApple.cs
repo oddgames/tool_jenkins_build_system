@@ -99,61 +99,6 @@ namespace ODDFramework
             Pipeline.Build(xcodeBasePath, BuildOptions.CompressWithLz4HC);
         }
 
-        public static void PrepareQA()
-        {
-            string versionString = Pipeline.GetVariable("VERSION");
-            var version = new ODDFramework.Version(versionString);
-
-            PlayerSettings.iOS.buildNumber = version.Build.ToString();
-            Pipeline.Log($"✓ CFBundleVersion: {PlayerSettings.iOS.buildNumber}");
-
-            Pipeline.Prepare("ODDGAMES_FORCE_ENABLE_ODD_LOGS");
-        }
-
-        public static void QA()
-        {
-            ApplyQASettings();
-
-            string xcodeBasePath = System.Environment.GetEnvironmentVariable("XCODE_BASE_PATH");
-            if (string.IsNullOrEmpty(xcodeBasePath))
-                throw new System.Exception("XCODE_BASE_PATH environment variable is not set");
-
-            // LZ4 (not LZ4HC) — much faster to compress than the high-compression variant
-            Pipeline.Build(xcodeBasePath, BuildOptions.CompressWithLz4);
-        }
-
-        /// <summary>
-        /// QA build settings — fastest possible iOS build for internal testing.
-        /// NOTE: iOS has NO Mono option — Apple only allows AOT/IL2CPP, so unlike Android
-        /// the QA build still uses IL2CPP. Speed comes from the Debug IL2CPP compiler config
-        /// (far faster C++ compile than Release/Master), low managed stripping, no engine
-        /// stripping, and LZ4 data compression. The Xcode archive also uses the Debug
-        /// configuration (see archiveXcodeProject in macos.groovy). QA is never store-uploaded.
-        /// </summary>
-        private static void ApplyQASettings()
-        {
-            PlayerSettings.stripEngineCode = false;
-
-            PlayerSettings.SetStackTraceLogType(LogType.Log, StackTraceLogType.ScriptOnly);
-            PlayerSettings.SetStackTraceLogType(LogType.Warning, StackTraceLogType.ScriptOnly);
-            PlayerSettings.SetStackTraceLogType(LogType.Error, StackTraceLogType.ScriptOnly);
-            PlayerSettings.SetStackTraceLogType(LogType.Assert, StackTraceLogType.ScriptOnly);
-            PlayerSettings.SetStackTraceLogType(LogType.Exception, StackTraceLogType.ScriptOnly);
-
-            EditorUserBuildSettings.allowDebugging = false;
-            EditorUserBuildSettings.connectProfiler = false;
-            PlayerSettings.enableInternalProfiler = false;
-
-            // Low (not Medium) stripping — less link analysis, faster build. IL2CPP can't go Disabled.
-            PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.iOS, ManagedStrippingLevel.Low);
-            // Debug compiler config — dramatically faster IL2CPP C++ compile than Release
-            PlayerSettings.SetIl2CppCompilerConfiguration(NamedBuildTarget.iOS, Il2CppCompilerConfiguration.Debug);
-            PlayerSettings.SetIl2CppCodeGeneration(NamedBuildTarget.iOS, Il2CppCodeGeneration.OptimizeSize);
-            PlayerSettings.SetIl2CppStacktraceInformation(NamedBuildTarget.iOS, Il2CppStacktraceInformation.MethodFileLineNumber);
-
-            PlayerSettings.iOS.scriptCallOptimization = ScriptCallOptimizationLevel.SlowAndSafe;
-        }
-
         [UnityEditor.Callbacks.PostProcessBuild(int.MaxValue)]
         public static void OnPostprocessBuild(BuildTarget target, string pathToBuiltProject)
         {
