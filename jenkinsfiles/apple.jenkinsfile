@@ -36,7 +36,7 @@ pipeline {
     }
 
     parameters {
-        choice(name: 'BUILD_TYPE', choices: ['Debug', 'QA', 'Release'], description: 'Build type to create (QA = fast IL2CPP-Debug build for internal testing, never store-uploaded)')
+        choice(name: 'BUILD_TYPE', choices: ['QA', 'Debug', 'Release'], description: 'Build type to create (QA = fast IL2CPP-Debug build for internal testing, never store-uploaded)')
         persistentString(name: 'BRANCH', defaultValue: '/main', description: 'Branch, changeset, or full selector (e.g. /main, 9613, or 9613@branch@repo@server)')
         string(name: 'NODE', defaultValue: '', description: 'Override build agent (e.g. MACMINI1). Leave blank for default.')
         extendedChoice(
