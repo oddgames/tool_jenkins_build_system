@@ -48,10 +48,17 @@ import groovy.transform.Field
  * @param defaultLabel Label to match ('Windows' or 'OSX')
  * @return Specific node name for agent { label ... }
  */
-def pickNode(String nodeOverride, String defaultLabel) {
+def pickNode(String nodeOverride, String defaultLabel, String branch = null) {
     if (nodeOverride?.trim()) {
         echo "[Node] Override: ${nodeOverride}"
         return nodeOverride
+    }
+
+    // Branch used for warm-cache affinity (soft-prefer the node that last built this branch).
+    // Falls back to the BRANCH parameter when the caller doesn't pass one.
+    def affinityBranch = branch
+    if (!affinityBranch) {
+        try { affinityBranch = params?.BRANCH } catch (Exception e) { affinityBranch = null }
     }
 
     def selected = defaultLabel  // Fallback if lock/API unavailable
@@ -59,7 +66,7 @@ def pickNode(String nodeOverride, String defaultLabel) {
     try {
         lock(resource: 'jenkins-node-selection') {
             sleep(time: 3, unit: 'SECONDS')
-            selected = _findIdleNode(defaultLabel)
+            selected = _findIdleNode(defaultLabel, affinityBranch)
         }
     } catch (Exception e) {
         // Lock or API completely unavailable (permissions not yet approved)
@@ -86,8 +93,8 @@ private def _workspaceName(String jobName) {
  * directory name would collide with this job's (preventing @2 suffix conflicts).
  * Returns the node name if found, or fails the build if no node is available.
  */
-private def _findIdleNode(String label) {
-    def result = _queryNodes(label, env.JOB_NAME)
+private def _findIdleNode(String label, String branch = null) {
+    def result = _queryNodes(label, env.JOB_NAME, branch)
 
     if (result.log) {
         echo result.log
@@ -101,11 +108,43 @@ private def _findIdleNode(String label) {
 }
 
 /**
+ * Find the node that most recently built this job on the given branch, by scanning previous
+ * builds' descriptions (set by updateBranchDescription() as "<branch> @<node>"). Used to
+ * soft-prefer the agent that already holds this branch's warm per-branch cache.
+ * Returns the node name, or null if none found / branch unknown.
+ */
+@NonCPS
+private def _lastNodeForBranch(String branch) {
+    if (!branch) return null
+    def wanted = branch.replaceAll('^/', '').trim()
+    if (!wanted) return null
+    try {
+        def run = currentBuild?.rawBuild?.getPreviousBuild()
+        int scanned = 0
+        while (run != null && scanned < 50) {
+            def desc = run.getDescription()
+            if (desc) {
+                def firstLine = desc.readLines() ? desc.readLines()[0] : desc
+                def m = (firstLine =~ /^(.*?)\s+@(\S+)\s*$/)
+                if (m.find() && m.group(1).trim() == wanted) {
+                    return m.group(2)
+                }
+            }
+            run = run.getPreviousBuild()
+            scanned++
+        }
+    } catch (Exception e) {
+        // API unavailable or not yet approved — affinity simply disabled
+    }
+    return null
+}
+
+/**
  * Pure Jenkins API query — no pipeline steps (echo/error).
  * Returns a map with: node (selected name or fallback label), log (status text), error (failure message or null).
  */
 @NonCPS
-private def _queryNodes(String label, String currentJob) {
+private def _queryNodes(String label, String currentJob, String branch = null) {
     try {
         def jenkins = jenkins.model.Jenkins.get()
         def labelObj = jenkins.getLabel(label)
@@ -124,6 +163,8 @@ private def _queryNodes(String label, String currentJob) {
         def queuedPerNode = _getQueuedJobsPerNode(jenkins)
 
         def currentWsName = _workspaceName(currentJob)
+        def preferredNode = _lastNodeForBranch(branch)  // warm per-branch cache lives here
+        def preferredEligible = false
         def nodeStatuses = []
         def bestNode = null
         def bestBusyCount = 999
@@ -181,16 +222,27 @@ private def _queryNodes(String label, String currentJob) {
             if (hasWorkspaceConflict) status += " [ws conflict]"
             nodeStatuses << status
 
-            if (hasFreeExecutor && !hasWorkspaceConflict && busyCount < bestBusyCount) {
-                bestNode = node.displayName
-                bestBusyCount = busyCount
+            if (hasFreeExecutor && !hasWorkspaceConflict) {
+                if (node.displayName == preferredNode) preferredEligible = true
+                if (busyCount < bestBusyCount) {
+                    bestNode = node.displayName
+                    bestBusyCount = busyCount
+                }
             }
         }
 
         def log = "[Node] ${currentJob} (ws: ${currentWsName}) — ${nodeStatuses.join(' | ')}"
 
+        // Soft affinity: if the node that last built this branch is available, prefer it so the
+        // build reuses that node's warm per-branch cache. Otherwise fall back to least-busy.
+        if (preferredNode && preferredEligible) {
+            log += "\n[Node] Selected: ${preferredNode} (warm cache for branch '${branch}')"
+            return [node: preferredNode, log: log, error: null]
+        }
+
         if (bestNode) {
             log += "\n[Node] Selected: ${bestNode}${bestBusyCount == 0 ? ' (empty)' : ''}"
+            if (preferredNode) log += " (preferred ${preferredNode} unavailable)"
             return [node: bestNode, log: log, error: null]
         }
 

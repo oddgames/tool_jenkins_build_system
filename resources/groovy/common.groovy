@@ -534,6 +534,14 @@ private def _testAllPermissions(currentBuildWrapper) {
         ex.getMessage()
     }
 
+    // --- Run.getPreviousBuild / getDescription (per-branch node affinity in pickNode) ---
+    testPermission('rawBuild.getPreviousBuild') {
+        if (rawBuild) rawBuild.getPreviousBuild()
+    }
+    testPermission('Run.getDescription') {
+        if (rawBuild) rawBuild.getDescription()
+    }
+
     return [passed: passed, failures: failures]
 }
 
@@ -562,7 +570,11 @@ def captureBuildUser() {
 
 def updateBranchDescription() {
     if (env.PLASTICSCM_BRANCH) {
-        currentBuild.description = env.PLASTICSCM_BRANCH.replaceAll('^/', '')
+        def branchName = env.PLASTICSCM_BRANCH.replaceAll('^/', '')
+        // Record the node alongside the branch so pickNode() can prefer this same (warm-cache)
+        // agent the next time this branch builds. Kept human-readable on one line; any
+        // explanations are appended on later lines, so pickNode only parses the first line.
+        currentBuild.description = env.NODE_NAME ? "${branchName} @${env.NODE_NAME}" : branchName
     }
 }
 
@@ -697,7 +709,7 @@ def sendSlackBuildNotification(Map config) {
     ]
     def storeIcon = storeIcons[platform] ?: storeIcons['Android']
     def osIcon = osIcons[platform]
-    def buildTypeIcon = [Debug: ':wrench:', Alpha: ':test_tube:', Release: ':rocket:', EditorTest: ':test_tube:', PlayTest: ':test_tube:'][buildType] ?: ''
+    def buildTypeIcon = [Debug: ':wrench:', QA: ':mag:', Alpha: ':test_tube:', Release: ':rocket:', EditorTest: ':test_tube:', PlayTest: ':test_tube:'][buildType] ?: ''
     def color = colorMap[status] ?: 'warning'
     def emoji = emojiMap[status] ?: ''
     def statusText = statusTextMap[status] ?: ''

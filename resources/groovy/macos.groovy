@@ -2098,6 +2098,11 @@ def runCocoaPods(String xcodePath) {
     sh """
         cd "${xcodePath}"
 
+        # Skip the CocoaPods analytics ping (a network round-trip on every install) and
+        # enable parallel code-signing of pods — both are free, safe build-time savings.
+        export COCOAPODS_DISABLE_STATS=1
+        export COCOAPODS_PARALLEL_CODE_SIGN=true
+
         POD_BIN=\$(which pod)
         echo "Using pod at: \$POD_BIN"
 
@@ -2116,8 +2121,44 @@ source 'https://cdn.cocoapods.org/'\\\\
             rm -f Podfile.bak
         fi
 
-        rm -f Podfile.lock
-        rm -rf Pods
+        # --- Pods cache (keyed by a hash of the normalised Podfile) ---
+        # Unity regenerates the whole Xcode project each build, so Pods/ is always absent
+        # here and every build does a full pod re-integration. Restoring a matching Pods/ +
+        # Podfile.lock makes 'pod install' incremental (skips dependency resolution and the
+        # download/copy of every pod) whenever the Podfile is unchanged. The cache lives in
+        # \$HOME (survives the workspace wipe) and is keyed by the Podfile hash, so any
+        # dependency change invalidates it automatically. The 3-attempt retry below still
+        # purges and rebuilds from scratch if a restored cache is ever broken.
+        JOB_KEY=\$(echo "${env.JOB_NAME}" | tr '/ ' '__')
+        CACHE_DIR="\$HOME/.jenkins_pods_cache/\$JOB_KEY"
+        PODFILE_HASH=""
+        [ -f Podfile ] && PODFILE_HASH=\$(shasum Podfile | awk '{print \$1}')
+
+        CACHE_HIT="no"
+        save_pods_cache() {
+            # Nothing to do on a cache hit (Pods are already identical) or with no Podfile
+            [ "\$CACHE_HIT" = "yes" ] && return 0
+            [ -z "\$PODFILE_HASH" ] && return 0
+            [ -d Pods ] || return 0
+            mkdir -p "\$CACHE_DIR"
+            rm -rf "\$CACHE_DIR/Pods" "\$CACHE_DIR/Podfile.lock" "\$CACHE_DIR/Podfile.sha"
+            cp -R Pods "\$CACHE_DIR/Pods"
+            [ -f Podfile.lock ] && cp Podfile.lock "\$CACHE_DIR/Podfile.lock"
+            echo "\$PODFILE_HASH" > "\$CACHE_DIR/Podfile.sha"
+            echo "[CACHE] Saved Pods cache for \$JOB_KEY"
+        }
+
+        if [ -n "\$PODFILE_HASH" ] && [ -f "\$CACHE_DIR/Podfile.sha" ] && [ -d "\$CACHE_DIR/Pods" ] && [ -f "\$CACHE_DIR/Podfile.lock" ] && [ "\$(cat "\$CACHE_DIR/Podfile.sha")" = "\$PODFILE_HASH" ]; then
+            echo "[CACHE] Podfile unchanged — restoring Pods/ + Podfile.lock for an incremental install"
+            rm -rf Pods
+            cp -R "\$CACHE_DIR/Pods" Pods
+            cp "\$CACHE_DIR/Podfile.lock" Podfile.lock
+            CACHE_HIT="yes"
+        else
+            echo "[CACHE] No usable Pods cache (miss or Podfile changed) — clean install"
+            rm -f Podfile.lock
+            rm -rf Pods
+        fi
         rm -rf *.xcworkspace
 
         # Force HTTP/1.1 to avoid HTTP/2 framing layer errors with GitHub downloads
@@ -2179,7 +2220,8 @@ def archiveXcodeProject(Map config) {
     def xcodePath = config.xcodePath
     def archivePath = config.archivePath
     def logPath = config.logPath ?: "${env.ARTIFACT_PATH}/xcodebuild_archive.log"
-    def configuration = config.configuration ?: (env.BUILD_TYPE == 'Debug' ? 'Debug' : 'Release')
+    // QA uses the Debug Xcode configuration for a faster archive compile (like Debug)
+    def configuration = config.configuration ?: (env.BUILD_TYPE in ['Debug', 'QA'] ? 'Debug' : 'Release')
 
     echo "[INFO] Xcode archive configuration: ${configuration}"
 
@@ -2709,11 +2751,13 @@ def validateUnityInstallation() {
     }
 
     // Verify IL2CPP support for platforms that require it
-    // iOS and Switch always use IL2CPP; other platforms use IL2CPP for Release builds
+    // iOS and Switch always use IL2CPP; Android/Amazon use IL2CPP for Release only.
+    // Android Debug and QA both use the Mono backend, so they don't need IL2CPP/NDK.
     def il2cppAlways = ['iOS', 'StandaloneOSX', 'Switch']
     def il2cppRelease = ['Android', 'Amazon']
+    def monoBuildTypes = ['Debug', 'QA']
     def needsIl2cpp = (env.PLATFORM in il2cppAlways) ||
-                      (env.PLATFORM in il2cppRelease && env.BUILD_TYPE != 'Debug')
+                      (env.PLATFORM in il2cppRelease && !(env.BUILD_TYPE in monoBuildTypes))
 
     if (needsIl2cpp) {
         verifyIl2cppSupport(playbackEngines)
@@ -2940,27 +2984,37 @@ def checkCacheValidity(String unityProjectPath) {
     echo "[Cache Integrity] Previous: Unity ${previousVersion ?: '(none)'} on ${previousBranch ?: '(none)'}"
     echo "[Cache Integrity] Current:  Unity ${currentVersion} on ${currentBranch}"
 
-    def reasons = []
+    def fullWipe = false
     if (!previousVersion) {
-        reasons << "No previous build info - first build or marker was deleted"
+        echo "[Cache Integrity] No previous build info - first build or marker was deleted"
+        fullWipe = true
     } else if (previousVersion != currentVersion) {
-        reasons << "Unity version changed: ${previousVersion} -> ${currentVersion}"
+        echo "[Cache Integrity] Unity version changed: ${previousVersion} -> ${currentVersion}"
+        fullWipe = true
     }
+    // Branch changes no longer trigger a wipe — per-branch cache symlinks (setupBranchCaches,
+    // called below) isolate each branch's BuildCache/Bee/IL2CPP/Addressables, so switching
+    // branches just repoints the links instead of rebuilding everything from scratch.
     if (previousBranch && previousBranch != currentBranch) {
-        reasons << "Branch changed: ${previousBranch} -> ${currentBranch}"
+        echo "[Cache Integrity] Branch changed ${previousBranch} -> ${currentBranch} (per-branch caches re-linked, no wipe)"
     }
 
-    if (reasons) {
+    if (fullWipe) {
         echo "========================================"
-        echo "AUTO-CLEANING UNITY CACHE"
-        reasons.each { echo "  Reason: ${it}" }
+        echo "AUTO-CLEANING UNITY CACHE (Unity version change / first build)"
         echo "========================================"
-        // Clear build caches but preserve ArtifactDB/SourceAssetDB to avoid full reimport
-        // Skip confirmation delay — this is an automatic decision, not user-initiated
-        cleanUnityCache(unityProjectPath, 'ShaderCache,BuildCache,ScriptAssemblies,PackageCache,Bee,IL2CPP,Addressables,Temp', true)
+        // On-disk cache formats can differ between editor versions, so wipe the shared Library
+        // caches (preserving ArtifactDB/SourceAssetDB to avoid a full reimport) AND the entire
+        // per-branch cache store for this job (all branches) since the linked caches live there.
+        cleanUnityCache(unityProjectPath, 'ShaderCache,ScriptAssemblies,PackageCache,Temp', true)
+        sh "rm -rf \"\${HOME}/.buildtools/unitycache/${jobName}\" || true"
+        echo "[Cache Integrity] Cleared per-branch cache store for ${jobName}"
     } else {
-        echo "[Cache Integrity] No changes detected, cache is valid"
+        echo "[Cache Integrity] No version change, incremental caches valid"
     }
+
+    // Always (re)establish the per-branch cache symlinks for the current branch
+    setupBranchCaches(unityProjectPath)
 }
 
 /**
@@ -3010,14 +3064,63 @@ def purgeWorkspace(String cleanCache) {
         }
         echo "[INFO] Timeout expired, proceeding with cache clean..."
     }
+    def jobKey = env.JOB_NAME?.replaceAll('[^a-zA-Z0-9_-]', '_') ?: 'unknown'
     sh """
         rm -rf "${env.WORKSPACE}"/*
         rm -rf "${env.WORKSPACE}"/.[!.]* || true
         echo "[OK] Clear Workspace complete - workspace purged"
     """
-    // Also wipe DerivedData since we're going all-in
+    // Also wipe DerivedData and the per-branch cache store (lives in \$HOME, survives the
+    // workspace purge) since we're going all-in
     sh "rm -rf \"\${HOME}/Library/Developer/Xcode/DerivedData\" || true"
+    sh "rm -rf \"\${HOME}/.buildtools/unitycache/${jobKey}\" || true"
     return true
+}
+
+/**
+ * Library cache dirs that get per-branch isolation via symlinks into a persistent store
+ * under $HOME/.buildtools/unitycache/<job>/<branch>. These are the expensive content-addressed
+ * build caches — keeping one copy per branch means switching branches just repoints the symlink
+ * instead of thrashing (and rebuilding) the other branch's cache. The map key is the CLEAN_CACHE
+ * token; the value is the actual Library subfolder name.
+ */
+def branchLinkedCaches() {
+    return [BuildCache: 'BuildCache', Bee: 'Bee', IL2CPP: 'il2cpp_cache', Addressables: 'com.unity.addressables']
+}
+
+def branchCacheStore() {
+    def jobKey = env.JOB_NAME?.replaceAll('[^a-zA-Z0-9_-]', '_') ?: 'unknown'
+    def branch = env.PLASTICSCM_BRANCH ?: env.BRANCH
+    if (!branch) return null
+    def branchKey = branch.replaceAll('[^a-zA-Z0-9_-]', '_')
+    return "${env.HOME}/.buildtools/unitycache/${jobKey}/${branchKey}"
+}
+
+/**
+ * (Re)point per-branch cache symlinks for the current branch. Idempotent — safe to call every
+ * build. Creates the store on first use, so a brand-new branch starts with an empty (cold) cache
+ * and is fully incremental on subsequent builds of that branch.
+ */
+def setupBranchCaches(String unityProjectPath) {
+    def store = branchCacheStore()
+    if (!store) {
+        echo "[Branch Cache] Branch unknown — skipping per-branch cache links"
+        return
+    }
+    def library = "${unityProjectPath}/Library"
+    def caches = branchLinkedCaches().values().join(' ')
+    sh """
+        set -e
+        mkdir -p "${library}" "${store}"
+        for d in ${caches}; do
+            mkdir -p "${store}/\$d"
+            link="${library}/\$d"
+            # rm on a symlink (no trailing slash) drops the link only, not the target
+            if [ -L "\$link" ] || [ -e "\$link" ]; then rm -rf "\$link"; fi
+            ln -s "${store}/\$d" "\$link"
+            echo "[Branch Cache] linked \$d"
+        done
+    """
 }
 
 def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConfirmation = false) {
@@ -3050,13 +3153,35 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
         }
     }
 
-    // Clear Library - delete entire Library folder
+    def store = branchCacheStore()
+    def linked = branchLinkedCaches()
+
+    // Clear the real data behind a per-branch cache symlink (NOT just the link, which would
+    // orphan the store) and re-establish an empty link. Falls back to a plain delete if the
+    // branch (and therefore the store path) isn't known.
+    def clearLinked = { String token ->
+        def dir = linked[token]
+        if (!store) return ["rm -rf \"${unityProjectPath}/Library/${dir}\""]
+        def target = "${store}/${dir}"
+        def link = "${unityProjectPath}/Library/${dir}"
+        return [
+            "if [ -L \"${link}\" ] || [ -e \"${link}\" ]; then rm -rf \"${link}\"; fi",
+            "rm -rf \"${target}\"",
+            "mkdir -p \"${target}\"",
+            "ln -s \"${target}\" \"${link}\""
+        ]
+    }
+
+    // Clear Library - delete entire Library folder (and the whole per-branch cache store, so
+    // the linked caches are cleared too rather than surviving outside the workspace)
     if (cacheTypes.contains('Clear Library')) {
         sh """
-            LIBRARY_PATH="${unityProjectPath}/Library"
-            rm -rf "\$LIBRARY_PATH"
-            echo "[OK] Clear Library: Deleted entire Library folder"
+            rm -rf "${unityProjectPath}/Library"
+            ${store ? "rm -rf \"${store}\"" : "echo '[Branch Cache] store unknown, skipped'"}
+            echo "[OK] Clear Library: Deleted entire Library folder and per-branch cache store"
         """
+        // Re-create the per-branch cache symlinks so this build stays linked after the wipe
+        setupBranchCaches(unityProjectPath)
         return
     }
 
@@ -3069,14 +3194,14 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
         switch (cacheType) {
             case 'All':
                 commands << "rm -rf \"${libraryVar}/ShaderCache\""
-                commands << "rm -rf \"${libraryVar}/BuildCache\""
+                commands.addAll(clearLinked('BuildCache'))
                 commands << "rm -rf \"${libraryVar}/ArtifactDB\""
                 commands << "rm -rf \"${libraryVar}/SourceAssetDB\""
                 commands << "rm -rf \"${libraryVar}/ScriptAssemblies\""
                 commands << "rm -rf \"${libraryVar}/PackageCache\""
-                commands << "rm -rf \"${libraryVar}/Bee\""
-                commands << "rm -rf \"${libraryVar}/il2cpp_cache\""
-                commands << "rm -rf \"${libraryVar}/com.unity.addressables\""
+                commands.addAll(clearLinked('Bee'))
+                commands.addAll(clearLinked('IL2CPP'))
+                commands.addAll(clearLinked('Addressables'))
                 commands << "rm -rf \"${tempVar}\""
                 commands << "rm -f \"${unityProjectPath}/Packages/packages-lock.json\""
                 commands << "rm -rf \"\${HOME}/Library/Unity/cache/packages\""
@@ -3087,7 +3212,7 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
                 commands << "rm -rf \"${libraryVar}/ShaderCache\""
                 break
             case 'BuildCache':
-                commands << "rm -rf \"${libraryVar}/BuildCache\""
+                commands.addAll(clearLinked('BuildCache'))
                 break
             case 'ArtifactDB':
                 commands << "rm -rf \"${libraryVar}/ArtifactDB\""
@@ -3106,13 +3231,13 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
                 commands << "rm -rf \"\${HOME}/Library/Unity/cache/upm\""
                 break
             case 'Bee':
-                commands << "rm -rf \"${libraryVar}/Bee\""
+                commands.addAll(clearLinked('Bee'))
                 break
             case 'IL2CPP':
-                commands << "rm -rf \"${libraryVar}/il2cpp_cache\""
+                commands.addAll(clearLinked('IL2CPP'))
                 break
             case 'Addressables':
-                commands << "rm -rf \"${libraryVar}/com.unity.addressables\""
+                commands.addAll(clearLinked('Addressables'))
                 break
             case 'DerivedData':
                 commands << "rm -rf \"\${HOME}/Library/Developer/Xcode/DerivedData\""

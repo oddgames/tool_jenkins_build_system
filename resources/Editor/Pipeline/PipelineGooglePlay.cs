@@ -161,6 +161,71 @@ namespace ODDFramework
             Pipeline.Build(GetOutputPath("Release", ".aab"), BuildOptions.CompressWithLz4HC);
         }
 
+        public static void PrepareQA()
+        {
+            Pipeline.Prepare("ODDGAMES_FORCE_ENABLE_ODD_LOGS", () =>
+            {
+                ConfigureAndroidKeystore();
+                SetAndroidVersionCode();
+            });
+        }
+
+        public static void QA()
+        {
+            ConfigureAndroidKeystore();
+            ApplyQASettings();
+            // LZ4 (not LZ4HC) — much faster to compress than the high-compression variant
+            Pipeline.Build(GetOutputPath("QA", ".aab"), BuildOptions.CompressWithLz4);
+        }
+
+        /// <summary>
+        /// QA build settings — optimised for the fastest possible build for internal testing.
+        /// Mono scripting backend skips the IL2CPP C++ transpile/compile (by far the biggest
+        /// time sink), no managed/engine stripping skips link analysis, no minify skips R8,
+        /// no debug symbols skips symbol zipping. QA builds are never uploaded to the store.
+        /// </summary>
+        private static void ApplyQASettings()
+        {
+            EditorUserBuildSettings.buildAppBundle = true;
+
+            // Mono on Android only supports ARMv7 (32-bit). ARM64 requires IL2CPP.
+            // QA is internal-only and never hits the store (which mandates 64-bit), so ARMv7 is fine.
+            PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARMv7;
+
+            // Single texture format — all ARM devices support ASTC, avoids duplicate texture sets
+            PlayerSettings.Android.textureCompressionFormats = new[] { TextureCompressionFormat.ASTC };
+
+            // No asset pack split — single artifact, faster
+            PlayerSettings.Android.splitApplicationBinary = false;
+
+            // No engine code stripping
+            PlayerSettings.stripEngineCode = false;
+
+            PlayerSettings.SetStackTraceLogType(LogType.Log, StackTraceLogType.ScriptOnly);
+            PlayerSettings.SetStackTraceLogType(LogType.Warning, StackTraceLogType.ScriptOnly);
+            PlayerSettings.SetStackTraceLogType(LogType.Error, StackTraceLogType.ScriptOnly);
+            PlayerSettings.SetStackTraceLogType(LogType.Assert, StackTraceLogType.ScriptOnly);
+            PlayerSettings.SetStackTraceLogType(LogType.Exception, StackTraceLogType.ScriptOnly);
+
+            EditorUserBuildSettings.allowDebugging = false;
+            EditorUserBuildSettings.connectProfiler = false;
+            PlayerSettings.enableInternalProfiler = false;
+
+            // Mono2x — no IL2CPP C++ build step. This is the dominant build-time saving.
+            PlayerSettings.SetScriptingBackend(NamedBuildTarget.Android, ScriptingImplementation.Mono2x);
+
+            // No managed code stripping — skips link.xml analysis (valid because Mono allows Disabled)
+            PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.Android, ManagedStrippingLevel.Disabled);
+
+            // No R8/ProGuard minification
+            PlayerSettings.Android.minifyRelease = false;
+            PlayerSettings.Android.minifyDebug = false;
+
+            // Basic symbols only (symbol table) — enough to symbolicate crashes without the
+            // build-time cost of full debug symbols / symbol zipping
+            UnityEditor.Android.UserBuildSettings.DebugSymbols.level = Unity.Android.Types.DebugSymbolLevel.SymbolTable;
+        }
+
         private static string GetOutputPath(string buildType, string extension)
         {
             // Use full VERSION env var (includes branch suffix, e.g. 3.94.13640-main)

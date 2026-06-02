@@ -29,12 +29,12 @@
 pipeline {
     agent {
         node {
-            label buildUtils.pickNode(params.NODE, 'Windows')
+            label buildUtils.pickNode(params.NODE, 'Windows', params.BRANCH)
         }
     }
 
     parameters {
-        choice(name: 'BUILD_TYPE', choices: ['Debug', 'Release'], description: 'Build type to create')
+        choice(name: 'BUILD_TYPE', choices: ['Debug', 'QA', 'Release'], description: 'Build type to create (QA = fast Mono build for internal testing, never store-uploaded)')
         persistentString(name: 'BRANCH', defaultValue: '/main', description: 'Branch, changeset, or full selector (e.g. /main, 9613, or 9613@branch@repo@server)')
         string(name: 'NODE', defaultValue: '', description: 'Override build agent (e.g. BUILD1, BUILD3). Leave blank for default.')
         extendedChoice(

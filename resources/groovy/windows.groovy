@@ -3925,11 +3925,13 @@ def validateUnityInstallation() {
     }
 
     // Verify IL2CPP support for platforms that require it
-    // Switch always uses IL2CPP; all other platforms use IL2CPP for Release builds
+    // Switch always uses IL2CPP; Android/Amazon use IL2CPP for Release only.
+    // Debug and QA both use the Mono backend, so they don't need IL2CPP/NDK.
     def il2cppAlways = ['Switch']
     def il2cppRelease = ['Android', 'Amazon']
+    def monoBuildTypes = ['Debug', 'QA']
     def needsIl2cpp = (env.PLATFORM in il2cppAlways) ||
-                      (env.PLATFORM in il2cppRelease && env.BUILD_TYPE != 'Debug')
+                      (env.PLATFORM in il2cppRelease && !(env.BUILD_TYPE in monoBuildTypes))
 
     if (needsIl2cpp) {
         verifyIl2cppSupport(playbackEngines)
@@ -4236,27 +4238,41 @@ def checkCacheValidity(String unityProjectPath) {
     echo "[Cache Integrity] Previous: Unity ${previousVersion ?: '(none)'} on ${previousBranch ?: '(none)'}"
     echo "[Cache Integrity] Current:  Unity ${currentVersion} on ${currentBranch}"
 
-    def reasons = []
+    def fullWipe = false
     if (!previousVersion) {
-        reasons << "No previous build info - first build or marker was deleted"
+        echo "[Cache Integrity] No previous build info - first build or marker was deleted"
+        fullWipe = true
     } else if (previousVersion != currentVersion) {
-        reasons << "Unity version changed: ${previousVersion} -> ${currentVersion}"
+        echo "[Cache Integrity] Unity version changed: ${previousVersion} -> ${currentVersion}"
+        fullWipe = true
     }
+    // Branch changes no longer trigger a wipe — per-branch cache junctions (setupBranchCaches,
+    // called below) isolate each branch's BuildCache/Bee/IL2CPP/Addressables, so switching
+    // branches just repoints the links instead of rebuilding everything from scratch.
     if (previousBranch && previousBranch != currentBranch) {
-        reasons << "Branch changed: ${previousBranch} -> ${currentBranch}"
+        echo "[Cache Integrity] Branch changed ${previousBranch} -> ${currentBranch} (per-branch caches re-linked, no wipe)"
     }
 
-    if (reasons) {
+    if (fullWipe) {
         echo "========================================"
-        echo "AUTO-CLEANING UNITY CACHE"
-        reasons.each { echo "  Reason: ${it}" }
+        echo "AUTO-CLEANING UNITY CACHE (Unity version change / first build)"
         echo "========================================"
-        // Clear build caches but preserve ArtifactDB/SourceAssetDB to avoid full reimport
-        // Skip confirmation delay — this is an automatic decision, not user-initiated
-        cleanUnityCache(unityProjectPath, 'ShaderCache,BuildCache,ScriptAssemblies,PackageCache,Bee,IL2CPP,Addressables,Temp', true)
+        // On-disk cache formats can differ between editor versions, so wipe the shared Library
+        // caches (preserving ArtifactDB/SourceAssetDB to avoid a full reimport) AND the entire
+        // per-branch cache store for this job (all branches) since the linked caches live there.
+        cleanUnityCache(unityProjectPath, 'ShaderCache,ScriptAssemblies,PackageCache,Temp', true)
+        bat """
+            @echo off
+            @RD /S /Q "%USERPROFILE%\\.buildtools\\unitycache\\${jobName}" 2>nul
+            echo [Cache Integrity] Cleared per-branch cache store for ${jobName}
+            exit /b 0
+        """
     } else {
-        echo "[Cache Integrity] No changes detected, cache is valid"
+        echo "[Cache Integrity] No version change, incremental caches valid"
     }
+
+    // Always (re)establish the per-branch cache junctions for the current branch
+    setupBranchCaches(unityProjectPath)
 }
 
 /**
@@ -4308,14 +4324,65 @@ def purgeWorkspace(String cleanCache) {
         }
         echo "[INFO] Timeout expired, proceeding with cache clean..."
     }
+    def jobKey = env.JOB_NAME?.replaceAll('[^a-zA-Z0-9_-]', '_') ?: 'unknown'
     bat """
         @echo on
         for /D %%d in ("${env.WORKSPACE}\\*") do @RD /S /Q "%%d"
         del /F /Q "${env.WORKSPACE}\\*"
-        echo [OK] Clear Workspace complete - workspace purged
+        @RD /S /Q "%USERPROFILE%\\.buildtools\\unitycache\\${jobKey}"
+        echo [OK] Clear Workspace complete - workspace and per-branch cache store purged
         exit /b 0
     """
     return true
+}
+
+/**
+ * Library cache dirs that get per-branch isolation via NTFS junctions into a persistent
+ * store under %USERPROFILE%\.buildtools\unitycache\<job>\<branch>. These are the expensive
+ * content-addressed build caches — keeping one copy per branch means switching branches just
+ * repoints the junction instead of thrashing (and rebuilding) the other branch's cache.
+ * The map key is the CLEAN_CACHE token; the value is the actual Library subfolder name.
+ */
+def branchLinkedCaches() {
+    return [BuildCache: 'BuildCache', Bee: 'Bee', IL2CPP: 'il2cpp_cache', Addressables: 'com.unity.addressables']
+}
+
+def branchCacheStore() {
+    def jobKey = env.JOB_NAME?.replaceAll('[^a-zA-Z0-9_-]', '_') ?: 'unknown'
+    def branch = env.PLASTICSCM_BRANCH ?: env.BRANCH
+    if (!branch) return null
+    def branchKey = branch.replaceAll('[^a-zA-Z0-9_-]', '_')
+    return "%USERPROFILE%\\.buildtools\\unitycache\\${jobKey}\\${branchKey}"
+}
+
+/**
+ * (Re)point per-branch cache junctions for the current branch. Idempotent — safe to call
+ * every build. Creates the store on first use, so a brand-new branch starts with an empty
+ * (cold) cache and is fully incremental on subsequent builds of that branch.
+ */
+def setupBranchCaches(String unityProjectPath) {
+    def store = branchCacheStore()
+    if (!store) {
+        echo "[Branch Cache] Branch unknown — skipping per-branch cache links"
+        return
+    }
+    def library = "${unityProjectPath}/Library".replace('/', '\\')
+    def cmds = []
+    cmds << "if not exist \"${library}\" mkdir \"${library}\""
+    cmds << "if not exist \"${store}\" mkdir \"${store}\""
+    branchLinkedCaches().each { token, dir ->
+        def target = "${store}\\${dir}"
+        def link = "${library}\\${dir}"
+        cmds << "if not exist \"${target}\" mkdir \"${target}\""
+        // Drop any existing junction (rmdir removes the link only) or real dir (rmdir /s /q)
+        cmds << "if exist \"${link}\" ( fsutil reparsepoint query \"${link}\" >nul 2>&1 && rmdir \"${link}\" || rmdir /s /q \"${link}\" )"
+        cmds << "mklink /J \"${link}\" \"${target}\" >nul && echo [Branch Cache] linked ${dir}"
+    }
+    bat """
+        @echo off
+        ${cmds.join('\n        ')}
+        exit /b 0
+    """
 }
 
 def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConfirmation = false) {
@@ -4348,34 +4415,57 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
         }
     }
 
-    // Clear Library - delete entire Library folder
+    def libraryPath = "${unityProjectPath}/Library".replace('/', '\\')
+    def tempPath = "${unityProjectPath}/Temp".replace('/', '\\')
+    def store = branchCacheStore()
+    def linked = branchLinkedCaches()
+
+    // Clear the real data behind a per-branch cache junction (NOT just the junction, which
+    // would orphan the store) and re-establish an empty link. Falls back to a plain delete
+    // if the branch (and therefore the store path) isn't known.
+    def clearLinked = { String token ->
+        def dir = linked[token]
+        if (!store) return ["@RD /S /Q \"${libraryPath}\\${dir}\""]
+        def target = "${store}\\${dir}"
+        def link = "${libraryPath}\\${dir}"
+        return [
+            "if exist \"${link}\" ( fsutil reparsepoint query \"${link}\" >nul 2>&1 && rmdir \"${link}\" || rmdir /s /q \"${link}\" )",
+            "@RD /S /Q \"${target}\"",
+            "mkdir \"${target}\"",
+            "mklink /J \"${link}\" \"${target}\" >nul"
+        ]
+    }
+
+    // Clear Library - delete entire Library folder (and the whole per-branch cache store, so
+    // the linked caches are cleared too rather than surviving outside the workspace)
     if (cacheTypes.contains('Clear Library')) {
         bat """
             @echo on
-            set LIBRARY_PATH=${unityProjectPath}/Library
-            @RD /S /Q "%LIBRARY_PATH%"            echo [OK] Clear Library: Deleted entire Library folder
+            @RD /S /Q "${libraryPath}"
+            ${store ? "@RD /S /Q \"${store}\"" : "echo [Branch Cache] store unknown, skipped"}
+            echo [OK] Clear Library: Deleted entire Library folder and per-branch cache store
             exit /b 0
         """
+        // Re-create the per-branch cache junctions so this build stays linked after the wipe
+        setupBranchCaches(unityProjectPath)
         return
     }
 
     // Build batch commands for each cache type
     def commands = []
-    def libraryPath = "${unityProjectPath}/Library"
-    def tempPath = "${unityProjectPath}/Temp"
 
     cacheTypes.each { cacheType ->
         switch (cacheType) {
             case 'All':
                 commands << "@RD /S /Q \"${libraryPath}\\ShaderCache\""
-                commands << "@RD /S /Q \"${libraryPath}\\BuildCache\""
+                commands.addAll(clearLinked('BuildCache'))
                 commands << "@RD /S /Q \"${libraryPath}\\ArtifactDB\""
                 commands << "@RD /S /Q \"${libraryPath}\\SourceAssetDB\""
                 commands << "@RD /S /Q \"${libraryPath}\\ScriptAssemblies\""
                 commands << "@RD /S /Q \"${libraryPath}\\PackageCache\""
-                commands << "@RD /S /Q \"${libraryPath}\\Bee\""
-                commands << "@RD /S /Q \"${libraryPath}\\il2cpp_cache\""
-                commands << "@RD /S /Q \"${libraryPath}\\com.unity.addressables\""
+                commands.addAll(clearLinked('Bee'))
+                commands.addAll(clearLinked('IL2CPP'))
+                commands.addAll(clearLinked('Addressables'))
                 commands << "@RD /S /Q \"${tempPath}\""
                 commands << "del /f /q \"${unityProjectPath}\\Packages\\packages-lock.json\""
                 commands << "@RD /S /Q \"%LOCALAPPDATA%\\Unity\\cache\\packages\""
@@ -4385,7 +4475,7 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
                 commands << "@RD /S /Q \"${libraryPath}\\ShaderCache\""
                 break
             case 'BuildCache':
-                commands << "@RD /S /Q \"${libraryPath}\\BuildCache\""
+                commands.addAll(clearLinked('BuildCache'))
                 break
             case 'ArtifactDB':
                 commands << "@RD /S /Q \"${libraryPath}\\ArtifactDB\""
@@ -4404,13 +4494,13 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
                 commands << "@RD /S /Q \"%LOCALAPPDATA%\\Unity\\cache\\upm\""
                 break
             case 'Bee':
-                commands << "@RD /S /Q \"${libraryPath}\\Bee\""
+                commands.addAll(clearLinked('Bee'))
                 break
             case 'IL2CPP':
-                commands << "@RD /S /Q \"${libraryPath}\\il2cpp_cache\""
+                commands.addAll(clearLinked('IL2CPP'))
                 break
             case 'Addressables':
-                commands << "@RD /S /Q \"${libraryPath}\\com.unity.addressables\""
+                commands.addAll(clearLinked('Addressables'))
                 break
             case 'None':
             case '----------':

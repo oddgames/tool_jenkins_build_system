@@ -22,7 +22,7 @@
 pipeline {
     agent {
         node {
-            label buildUtils.pickNode(params.NODE, 'Windows')
+            label buildUtils.pickNode(params.NODE, 'Windows', params.BRANCH)
         }
     }
 
