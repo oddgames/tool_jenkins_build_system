@@ -48,19 +48,23 @@ Unity C# pipeline scripts are copied from `resources/Editor/Pipeline/` into the 
 ### Library Loading
 
 - `@Library('tool_jenkins_build_system@branch')` — branch override only affects `@script` workspace (Jenkinsfile checkout), NOT `@libs` workspace (library code)
-- `@libs` always resolves from **Jenkins Global Pipeline Libraries** Plastic SCM selector: `smartbranch "main"`
-- **All library code changes MUST be merged to `main`** to take effect in builds
+- `@libs` always resolves from the **Jenkins Global Pipeline Libraries** Git source: GitHub `oddgames/tool_jenkins_build_system`, default version `main`
+- **All library code changes MUST be pushed to GitHub `main`** to take effect in builds
 
-## Source Control — Plastic SCM
+## Source Control
 
-This project uses **Plastic SCM**, not Git.
+**This library repo is hosted on GitHub** (`oddgames/tool_jenkins_build_system`). Version it with **git**: commit and push library changes to `main` (all library changes must be on `main` to take effect — see Library Loading above).
+
+The **build pipeline still checks out the Unity game projects from Plastic SCM** (`cm switch`/`cm update --forced`). The `cm` rules below apply to *pipeline code that drives the game workspace* — NOT to this repo.
+
+### Plastic SCM (game workspace only)
 
 **NEVER add a `cm` command to code unless verified** via docs or `cm <command> --help`. GUI-only features do NOT necessarily have CLI equivalents.
 
-### Verified `cm` Commands
-- `cm status`, `cm history <file>`, `cm cat <file>`, `cm undo . -r`, `cm update --forced`, `cm find changeset`
+#### Verified `cm` Commands
+- `cm status`, `cm history <file>`, `cm cat <file>`, `cm undo . -r`, `cm update --forced`, `cm switch`, `cm find changeset`
 
-### Known Non-Existent Commands
+#### Known Non-Existent Commands
 - `cm diff` — visual/UI tool only, won't work on CLI
 - `cm workspace checkcontent` — **does not exist**; "Check content (hash)" is GUI-only
 
