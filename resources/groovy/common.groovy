@@ -617,14 +617,21 @@ def addChangeHistorySummary(String changeHistory) {
     }
 }
 
-def calculateBuildVersion(int versionCodeBase) {
+def calculateBuildVersion(int versionCodeBase, boolean forUpload = false) {
     def branchSuffix = "-${env.PLASTICSCM_BRANCH.replaceAll('[/\\\\]', '')}"
     env.VERSION = "${env.BASE_VERSION}.${env.PLASTICSCM_CHANGESET_ID}.${env.BUILD_NUMBER}${branchSuffix}"
 
-    def versionCode = env.PLASTICSCM_BRANCH == '/main' ? versionCodeBase + env.BUILD_NUMBER.toInteger() : versionCodeBase
+    // Stores (Google Play / Amazon) permanently burn every versionCode they accept and require a
+    // strictly increasing value. BUILD_NUMBER is a per-job monotonic counter, so base + BUILD_NUMBER
+    // is unique across every build of this job. Increment whenever the build can reach a store —
+    // /main (auto store upload) OR a forced upload from any branch — otherwise feature builds that
+    // stay local keep the bare base so repeated QA sideloads share a stable versionCode.
+    def willUpload = env.PLASTICSCM_BRANCH == '/main' || forUpload
+    def versionCode = willUpload ? versionCodeBase + env.BUILD_NUMBER.toInteger() : versionCodeBase
     env.ANDROID_VERSION_CODE = versionCode.toString()
 
-    def vcDetail = env.PLASTICSCM_BRANCH == '/main' ? "${versionCodeBase} + ${env.BUILD_NUMBER} = ${env.ANDROID_VERSION_CODE} (main)" : "${env.ANDROID_VERSION_CODE} (feature)"
+    def reason = env.PLASTICSCM_BRANCH == '/main' ? 'main' : (forUpload ? 'force-upload' : 'feature')
+    def vcDetail = willUpload ? "${versionCodeBase} + ${env.BUILD_NUMBER} = ${env.ANDROID_VERSION_CODE} (${reason})" : "${env.ANDROID_VERSION_CODE} (${reason})"
     echo "Version: ${env.VERSION} | versionCode: ${vcDetail}"
 
     return [version: env.VERSION, versionCode: env.ANDROID_VERSION_CODE]

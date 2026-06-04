@@ -447,7 +447,7 @@ def addSidebarLink(String url, String title, String iconUrl) { common.addSidebar
 def addGoogleDriveLinks(String folderLink, String fileLink, String fileType) { common.addGoogleDriveLinks(folderLink, fileLink, fileType) }
 def captureBuildUser() { common.captureBuildUser() }
 def printScmInfo() { common.printScmInfo() }
-def calculateBuildVersion(int versionCodeBase) { common.calculateBuildVersion(versionCodeBase) }
+def calculateBuildVersion(int versionCodeBase, boolean forUpload = false) { common.calculateBuildVersion(versionCodeBase, forUpload) }
 
 def startup(String buildType, String paramsBranch) {
     platform.configureGitAuth()

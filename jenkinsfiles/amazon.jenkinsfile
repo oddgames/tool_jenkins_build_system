@@ -284,7 +284,7 @@ pipeline {
             steps {
                 script {
                     env.CURRENT_STAGE = 'Calculate Build Version'
-                    buildUtils.calculateBuildVersion(env.VERSION_CODE_BASE.toInteger())
+                    buildUtils.calculateBuildVersion(env.VERSION_CODE_BASE.toInteger(), params.FORCE_UPLOAD)
                 }
             }
         }
