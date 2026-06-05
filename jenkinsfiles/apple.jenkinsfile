@@ -355,10 +355,22 @@ pipeline {
                     steps {
                         script { env.CURRENT_STAGE = 'Prepare' }
                         sh """
-                            rm -rf "${env.ARTIFACT_PATH}"
-                            mkdir -p "${env.ARTIFACT_PATH}"
-                            rm -rf "${env.XCODE_BASE_PATH}"
-                            mkdir -p "${env.XCODE_BASE_PATH}"
+                            # Xcode output can carry BSD immutable flags (uchg) or read-only perms
+                            # that make plain 'rm -rf' fail with 'Directory not empty' (ENOTEMPTY).
+                            # Strip flags/perms and retry once (also clears a Spotlight/fsevents
+                            # race) before recreating the build dirs.
+                            force_clean() {
+                                target="\$1"
+                                [ -e "\$target" ] || return 0
+                                chflags -R nouchg "\$target" 2>/dev/null || true
+                                chmod -R u+rwx "\$target" 2>/dev/null || true
+                                rm -rf "\$target" 2>/dev/null && return 0
+                                sleep 2
+                                rm -rf "\$target"
+                            }
+                            force_clean "${env.ARTIFACT_PATH}"
+                            force_clean "${env.XCODE_BASE_PATH}"
+                            mkdir -p "${env.ARTIFACT_PATH}" "${env.XCODE_BASE_PATH}"
                         """
                         withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
                             script {
