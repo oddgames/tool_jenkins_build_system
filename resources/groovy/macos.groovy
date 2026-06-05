@@ -3094,6 +3094,28 @@ def branchCacheStore() {
 }
 
 /**
+ * Shell function injected into cache-cleanup sh blocks. Plain `rm -rf` fails with ENOTEMPTY
+ * ('Directory not empty') when a nested dir is read-only (Unity's Bee build backend writes its
+ * cache that way) or a file carries a BSD immutable flag / read-only perms (Xcode output).
+ * force_clean strips flags+perms and retries; a symlink is unlinked WITHOUT recursing into its
+ * target (so we never chmod the real cache store behind a per-branch link).
+ */
+def forceCleanShellFn() {
+    return '''force_clean() {
+    for target in "$@"; do
+        [ -e "$target" ] || [ -L "$target" ] || continue
+        if [ -L "$target" ]; then rm -f "$target"; continue; fi
+        chflags -R nouchg "$target" 2>/dev/null || true
+        chmod -R u+rwx "$target" 2>/dev/null || true
+        rm -rf "$target" 2>/dev/null && continue
+        sleep 1
+        chmod -R u+rwx "$target" 2>/dev/null || true
+        rm -rf "$target"
+    done
+}'''
+}
+
+/**
  * (Re)point per-branch cache symlinks for the current branch. Idempotent — safe to call every
  * build. Creates the store on first use, so a brand-new branch starts with an empty (cold) cache
  * and is fully incremental on subsequent builds of that branch.
@@ -3108,12 +3130,14 @@ def setupBranchCaches(String unityProjectPath) {
     def caches = branchLinkedCaches().values().join(' ')
     sh """
         set -e
+        ${forceCleanShellFn()}
         mkdir -p "${library}" "${store}"
         for d in ${caches}; do
             mkdir -p "${store}/\$d"
             link="${library}/\$d"
-            # rm on a symlink (no trailing slash) drops the link only, not the target
-            if [ -L "\$link" ] || [ -e "\$link" ]; then rm -rf "\$link"; fi
+            # Drop any existing link OR a stale real dir (e.g. a read-only Bee cache from a
+            # pre-symlink build) before re-linking. force_clean handles both.
+            force_clean "\$link"
             ln -s "${store}/\$d" "\$link"
             echo "[Branch Cache] linked \$d"
         done
@@ -3158,12 +3182,12 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
     // branch (and therefore the store path) isn't known.
     def clearLinked = { String token ->
         def dir = linked[token]
-        if (!store) return ["rm -rf \"${unityProjectPath}/Library/${dir}\""]
+        if (!store) return ["force_clean \"${unityProjectPath}/Library/${dir}\""]
         def target = "${store}/${dir}"
         def link = "${unityProjectPath}/Library/${dir}"
         return [
-            "if [ -L \"${link}\" ] || [ -e \"${link}\" ]; then rm -rf \"${link}\"; fi",
-            "rm -rf \"${target}\"",
+            "force_clean \"${link}\"",
+            "force_clean \"${target}\"",
             "mkdir -p \"${target}\"",
             "ln -s \"${target}\" \"${link}\""
         ]
@@ -3173,8 +3197,9 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
     // the linked caches are cleared too rather than surviving outside the workspace)
     if (cacheTypes.contains('Clear Library')) {
         sh """
-            rm -rf "${unityProjectPath}/Library"
-            ${store ? "rm -rf \"${store}\"" : "echo '[Branch Cache] store unknown, skipped'"}
+            ${forceCleanShellFn()}
+            force_clean "${unityProjectPath}/Library"
+            ${store ? "force_clean \"${store}\"" : "echo '[Branch Cache] store unknown, skipped'"}
             echo "[OK] Clear Library: Deleted entire Library folder and per-branch cache store"
         """
         // Re-create the per-branch cache symlinks so this build stays linked after the wipe
@@ -3203,7 +3228,7 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
                 commands << "rm -f \"${unityProjectPath}/Packages/packages-lock.json\""
                 commands << "rm -rf \"\${HOME}/Library/Unity/cache/packages\""
                 commands << "rm -rf \"\${HOME}/Library/Unity/cache/upm\""
-                commands << "rm -rf \"\${HOME}/Library/Developer/Xcode/DerivedData\""
+                commands << "force_clean \"\${HOME}/Library/Developer/Xcode/DerivedData\""
                 break
             case 'ShaderCache':
                 commands << "rm -rf \"${libraryVar}/ShaderCache\""
@@ -3237,7 +3262,7 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
                 commands.addAll(clearLinked('Addressables'))
                 break
             case 'DerivedData':
-                commands << "rm -rf \"\${HOME}/Library/Developer/Xcode/DerivedData\""
+                commands << "force_clean \"\${HOME}/Library/Developer/Xcode/DerivedData\""
                 break
             case 'None':
             case '----------':
@@ -3250,6 +3275,7 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
 
     if (commands) {
         sh """
+            ${forceCleanShellFn()}
             LIBRARY_PATH="${unityProjectPath}/Library"
             TEMP_PATH="${unityProjectPath}/Temp"
 
