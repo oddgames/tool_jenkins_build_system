@@ -761,6 +761,9 @@ def sendSlackBuildNotification(Map config) {
         links += " | <${fileUrl}|:open_file_folder: Local>"
     }
     if (status == 'failure' || status == 'unstable') {
+        if (env.UNITY_ERRORS_URL) {
+            links += " | <${env.UNITY_ERRORS_URL}|:rotating_light: Unity Errors>"
+        }
         def dashUrl = env.DASHBOARD_URL ?: null
         if (dashUrl) {
             links += " | <${dashUrl}/#analyzer?job=${env.JOB_NAME}&build=${env.BUILD_NUMBER}|:mag: Analyze>"
@@ -1180,26 +1183,40 @@ def extractErrorLines(List lines) {
 
 /**
  * Surface a clickable link to an archived error log:
+ *   - a red "Unity Errors" shields.io badge on the build (links to the log),
  *   - a summary box on the build status page (manager.createSummary),
  *   - a left-sidebar link on the build status page (addSidebarLink),
  *   - an entry appended to the build description (shown in the Builds history widget),
+ *   - env.UNITY_ERRORS_URL, so the Slack notification can link to it,
  *   - the plain URL echoed into the stage log (for the pipeline overview).
  * The artifact is archived later in post{always{}}, so the URL resolves once the
  * build finishes. artifactRelPath is relative to the archived 'artifacts/' dir.
+ *
+ * Idempotent: called both inline (printUnityErrors, mid-build) and in post
+ * (collectUnityErrors). The badge/env/description refresh on every call; the
+ * sidebar link and summary box are added once (guarded) so they don't duplicate.
  */
 def linkErrorLog(String artifactRelPath, String label = 'Unity Errors') {
     if (!env.BUILD_URL) { echo "[WARN] linkErrorLog: BUILD_URL not set, skipping link"; return }
     def url = "${env.BUILD_URL}artifact/${artifactRelPath}"
+    env.UNITY_ERRORS_URL = url
     echo "[INFO] ${label} log (clickable after build finishes): ${url}"
 
-    try {
-        manager.createSummary('error.png').appendText(
-            "<b>${label}:</b> <a href=\"${url}\">${artifactRelPath}</a>", false)
-    } catch (Exception e) {
-        echo "[WARN] linkErrorLog: could not add summary: ${e.message}"
-    }
+    // Red shields.io badge, clickable through to the log (idempotent: addShieldsBadge
+    // removes the prior badge with this id before re-adding).
+    addShieldsBadge('unity-errors', label, 'red', url, 'unity')
 
-    addSidebarLink(url, label, 'symbol-warning.png')
+    // Sidebar link + summary box only once, so the inline + post calls don't duplicate them.
+    if (env.UNITY_ERRORS_LINKED != 'true') {
+        try {
+            manager.createSummary('error.png').appendText(
+                "<b>${label}:</b> <a href=\"${url}\">${artifactRelPath}</a>", false)
+        } catch (Exception e) {
+            echo "[WARN] linkErrorLog: could not add summary: ${e.message}"
+        }
+        addSidebarLink(url, label, 'symbol-warning.png')
+        env.UNITY_ERRORS_LINKED = 'true'
+    }
 
     try {
         def desc = currentBuild.description ?: ''

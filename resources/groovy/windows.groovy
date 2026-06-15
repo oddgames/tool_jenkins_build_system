@@ -4538,6 +4538,7 @@ def printUnityErrors(int tailLines = 10000) {
 
             if (env.ARTIFACT_PATH) {
                 writeFile file: "${env.ARTIFACT_PATH}/unity_errors.log", text: errors.join('\n')
+                common.linkErrorLog('unity_errors.log')
             }
         }
     } catch (Exception ex) {
