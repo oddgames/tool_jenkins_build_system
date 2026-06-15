@@ -3295,40 +3295,7 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
 def printUnityErrors(int tailLines = 10000) {
     try {
         def logLines = currentBuild.rawBuild.getLog(tailLines)
-        def errorPatterns = [
-            ~/\[Error\]/,
-            ~/\[Exception\]/,
-            ~/(?i)error CS\d+/,
-            ~/BUILD FAILED/,
-            ~/Error building Player/,
-            ~/UnityException/,
-            ~/BuildFailedException/,
-            ~/InvalidOperationException/,
-            ~/NullReferenceException/,
-            ~/MissingReferenceException/,
-            ~/ArgumentException/,
-            ~/FileNotFoundException/,
-            ~/TypeLoadException/,
-            ~/(?i)Exception:.*at /,
-        ]
-
-        def errors = []
-        for (int i = 0; i < logLines.size(); i++) {
-            def line = logLines[i]
-            def isError = errorPatterns.any { pattern -> line =~ pattern }
-            if (isError) {
-                errors << line
-                // Grab stack trace continuation lines
-                for (int j = i + 1; j < logLines.size() && j < i + 20; j++) {
-                    def nextLine = logLines[j]
-                    if (nextLine =~ /^\s+(at |--- |UnityEngine\.|UnityEditor\.)/ || nextLine =~ /^\s+\(/) {
-                        errors << nextLine
-                    } else {
-                        break
-                    }
-                }
-            }
-        }
+        def errors = common.extractErrorLines(logLines)
 
         if (errors) {
             echo "========== UNITY ERRORS & EXCEPTIONS =========="
@@ -3417,50 +3384,13 @@ def runUnityCommand(Map config) {
  * @param stageNames  List of stage names to scan (default: Unity Prepare + Unity Build)
  */
 def collectUnityErrors(List stageNames = ['Unity Prepare', 'Unity Build']) {
-    def errorPatterns = [
-        ~/\[Error\]/,
-        ~/\[Exception\]/,
-        ~/(?i)error CS\d+/,
-        ~/BUILD FAILED/,
-        ~/InvalidOperationException/,
-        ~/NullReferenceException/,
-        ~/MissingReferenceException/,
-        ~/ArgumentException/,
-        ~/IndexOutOfRangeException/,
-        ~/FileNotFoundException/,
-        ~/TypeLoadException/,
-        ~/ReflectionTypeLoadException/,
-        ~/(?i)Exception:.*at /,
-        ~/Error building Player/,
-        ~/UnityException/,
-        ~/BuildFailedException/,
-    ]
-
     def allErrors = []
 
     stageNames.each { stageName ->
         def stageLog = common.getStageLogsFromRawLog(stageName, 50000)
         if (!stageLog) return
 
-        def lines = stageLog.readLines()
-        def stageErrors = []
-        for (int i = 0; i < lines.size(); i++) {
-            def line = lines[i]
-            def isError = errorPatterns.any { pattern -> line =~ pattern }
-            if (isError) {
-                stageErrors << line
-                // Grab following lines that look like stack trace continuation (indented or "at " lines)
-                for (int j = i + 1; j < lines.size() && j < i + 20; j++) {
-                    def nextLine = lines[j]
-                    if (nextLine =~ /^\s+(at |--- |UnityEngine\.|UnityEditor\.)/ || nextLine =~ /^\s+\(/) {
-                        stageErrors << nextLine
-                    } else {
-                        break
-                    }
-                }
-            }
-        }
-
+        def stageErrors = common.extractErrorLines(stageLog.readLines())
         if (stageErrors) {
             allErrors << "===== ${stageName} ====="
             allErrors.addAll(stageErrors)
@@ -3473,6 +3403,7 @@ def collectUnityErrors(List stageNames = ['Unity Prepare', 'Unity Build']) {
 
         if (env.ARTIFACT_PATH) {
             writeFile file: "${env.ARTIFACT_PATH}/unity_errors.log", text: errorText
+            common.linkErrorLog('unity_errors.log')
         }
 
         echo "========== UNITY ERRORS & EXCEPTIONS =========="

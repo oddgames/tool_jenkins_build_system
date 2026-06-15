@@ -327,7 +327,12 @@ public static void Build(string outputPath, BuildOptions options)
                 {
                     if (msg.type == LogType.Exception || msg.type == LogType.Error)
                     {
-                        LogError($"[{step.name}] [{msg.type}] {msg.content}");
+                        // Gradle errors arrive as the entire gradle stdout in one message,
+                        // where the real cause ("Manifest merger failed", etc.) is buried far
+                        // below hundreds of harmless "Configure project" warnings. Surface the
+                        // "FAILURE: Build failed" → "BUILD FAILED" block up front when present.
+                        string content = ExtractGradleFailure(msg.content) ?? msg.content;
+                        LogError($"[{step.name}] [{msg.type}] {content}");
                     }
                 }
             }
@@ -367,6 +372,35 @@ public static void Build(string outputPath, BuildOptions options)
             }
 
             LogError("==================================");
+        }
+
+        /// <summary>
+        /// If the message contains a Gradle failure banner, return just the failure block
+        /// ("FAILURE: Build failed with an exception." through the "BUILD FAILED in <n>s"
+        /// line) with a header. This is where the real cause is printed. Returns null when
+        /// no banner is present so the caller falls back to the original content.
+        /// </summary>
+        private static string ExtractGradleFailure(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+
+            int start = content.IndexOf("FAILURE: Build failed with an exception", StringComparison.Ordinal);
+            if (start < 0) return null;
+
+            int end = content.IndexOf("BUILD FAILED", start, StringComparison.Ordinal);
+            // Include the "BUILD FAILED in <n>s" line itself if we found it.
+            if (end > start)
+            {
+                int eol = content.IndexOf('\n', end);
+                end = eol > end ? eol : content.Length;
+            }
+            else
+            {
+                end = content.Length;
+            }
+
+            string block = content.Substring(start, end - start).Trim();
+            return $"Gradle build failed — extracted cause (full output above/in console):\n{block}";
         }
 
         private static void CaptureLogErrors(string message, string stackTrace, LogType type)

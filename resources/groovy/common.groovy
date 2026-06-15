@@ -1092,6 +1092,127 @@ def getStageLogsFromRawLog(String stageName, int maxLines = 5000) {
 }
 
 /**
+ * Scan console log lines and return error/exception lines plus relevant context.
+ *
+ * Shared by printUnityErrors (inline, mid-stage) and collectUnityErrors (post).
+ * Handles three shapes:
+ *   1. Single error lines (Unity [Error], CS errors, .NET exceptions) followed by
+ *      stack-trace continuation lines.
+ *   2. Gradle failure blocks — captured verbatim from "FAILURE: Build failed with
+ *      an exception." through the terminating "BUILD FAILED in <n>s" line. This is
+ *      where the real cause lives (e.g. "Manifest merger failed : minSdkVersion 25
+ *      cannot be smaller than version 26"). Plain keyword matching misses it because
+ *      those reason lines start with "> " or "* ", not an error keyword.
+ *   3. Unity's Gradle wrapper errors (CommandInvokationFailure, GradleInvokationException,
+ *      "<path>AndroidManifest.xml Error:").
+ */
+def extractErrorLines(List lines) {
+    def errorPatterns = [
+        ~/\[Error\]/,
+        ~/\[Exception\]/,
+        ~/(?i)error CS\d+/,
+        ~/Error building Player/,
+        ~/UnityException/,
+        ~/BuildFailedException/,
+        ~/InvalidOperationException/,
+        ~/NullReferenceException/,
+        ~/MissingReferenceException/,
+        ~/ArgumentException/,
+        ~/IndexOutOfRangeException/,
+        ~/FileNotFoundException/,
+        ~/TypeLoadException/,
+        ~/ReflectionTypeLoadException/,
+        ~/(?i)Exception:.*at /,
+        ~/BUILD FAILED/,
+        // Gradle / Android build failures — keyword anchors for the wrapper lines.
+        ~/CommandInvokationFailure/,
+        ~/GradleInvokationException/,
+        ~/Gradle build failed/,
+        ~/Manifest merger failed/,
+        ~/Execution failed for task/,
+        ~/^> Task .* FAILED$/,
+        ~/AndroidManifest\.xml Error:/,
+    ]
+
+    def out = []
+    int n = lines.size()
+    for (int i = 0; i < n; i++) {
+        def line = lines[i]
+
+        // Gradle failure summary block: capture from the FAILURE banner through the
+        // terminating "BUILD FAILED in <n>s" line (capped at 60 lines for safety).
+        // This block holds the "* What went wrong" cause that keyword matching misses.
+        if (line.contains('FAILURE: Build failed with an exception')) {
+            out << line
+            int j = i + 1
+            int captured = 0
+            while (j < n && captured < 60) {
+                out << lines[j]
+                boolean isEnd = (lines[j] =~ /^BUILD FAILED in /).find()
+                j++
+                captured++
+                if (isEnd) break
+            }
+            i = j - 1
+            continue
+        }
+
+        def isError = errorPatterns.any { pattern -> line =~ pattern }
+        if (isError) {
+            out << line
+            // Grab following continuation lines: stack traces, or Gradle detail lines
+            // ("> ...", "* ...", indented "Suggestion:"/"or ..." hints).
+            for (int j = i + 1; j < n && j < i + 20; j++) {
+                def nextLine = lines[j]
+                if (nextLine =~ /^\s+(at |--- |UnityEngine\.|UnityEditor\.)/ ||
+                    nextLine =~ /^\s+\(/ ||
+                    nextLine =~ /^[>*]\s/ ||
+                    nextLine =~ /^\s+(Suggestion:|or |Required by)/) {
+                    out << nextLine
+                } else {
+                    break
+                }
+            }
+        }
+    }
+    return out
+}
+
+/**
+ * Surface a clickable link to an archived error log:
+ *   - a summary box on the build status page (manager.createSummary),
+ *   - a left-sidebar link on the build status page (addSidebarLink),
+ *   - an entry appended to the build description (shown in the Builds history widget),
+ *   - the plain URL echoed into the stage log (for the pipeline overview).
+ * The artifact is archived later in post{always{}}, so the URL resolves once the
+ * build finishes. artifactRelPath is relative to the archived 'artifacts/' dir.
+ */
+def linkErrorLog(String artifactRelPath, String label = 'Unity Errors') {
+    if (!env.BUILD_URL) { echo "[WARN] linkErrorLog: BUILD_URL not set, skipping link"; return }
+    def url = "${env.BUILD_URL}artifact/${artifactRelPath}"
+    echo "[INFO] ${label} log (clickable after build finishes): ${url}"
+
+    try {
+        manager.createSummary('error.png').appendText(
+            "<b>${label}:</b> <a href=\"${url}\">${artifactRelPath}</a>", false)
+    } catch (Exception e) {
+        echo "[WARN] linkErrorLog: could not add summary: ${e.message}"
+    }
+
+    addSidebarLink(url, label, 'symbol-warning.png')
+
+    try {
+        def desc = currentBuild.description ?: ''
+        def linkHtml = "<a href=\"${url}\">${label}</a>"
+        if (!desc.contains(linkHtml)) {
+            currentBuild.description = desc ? "${desc}<br/>${linkHtml}" : linkHtml
+        }
+    } catch (Exception e) {
+        echo "[WARN] linkErrorLog: could not append to description: ${e.message}"
+    }
+}
+
+/**
  * Walk up parent nodes to find the enclosing stage name for a FlowNode.
  * Checks LabelAction (regular stages) and ThreadNameAction (parallel branches).
  */
