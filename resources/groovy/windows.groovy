@@ -4522,6 +4522,49 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
 }
 
 /**
+ * Run a one-off pre-build PowerShell script supplied via the PREBUILD_SCRIPT
+ * job parameter. Runs on the agent in the workspace after checkout but before
+ * Unity opens — the place to clear stray agent-only state that a clean repo
+ * can't fix (e.g. an orphaned Assets/Plugins/Android/*.androidlib left by an
+ * old EDM4U resolve, or a stale Library/Bee/Android Gradle output).
+ *
+ * Best-effort by default: a non-zero exit is logged as a warning and the build
+ * continues (cleanup commands like Remove-Item on a missing path return errors).
+ * Set PREBUILD_FAIL_ON_ERROR=true (env) to make a failure abort the build.
+ */
+def runPrebuildScript(String script) {
+    if (!script?.trim()) {
+        echo "[Pre-Build] No PREBUILD_SCRIPT provided, skipping"
+        return
+    }
+
+    echo "========== PRE-BUILD SCRIPT (PowerShell) =========="
+    echo script
+    echo "==================================================="
+
+    def scriptFile = "${env.WORKSPACE}\\prebuild_script.ps1"
+    writeFile file: scriptFile, text: script
+    try {
+        def exitCode = bat(script: """
+            @echo on
+            powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptFile}"
+            exit /b %errorlevel%
+        """, returnStatus: true)
+
+        if (exitCode != 0) {
+            if (env.PREBUILD_FAIL_ON_ERROR == 'true') {
+                error "[Pre-Build] Script failed with exit code ${exitCode} (PREBUILD_FAIL_ON_ERROR=true)"
+            }
+            echo "[Pre-Build] [WARN] Script exited with code ${exitCode} — continuing (set PREBUILD_FAIL_ON_ERROR=true to abort on failure)"
+        } else {
+            echo "[Pre-Build] Script completed successfully"
+        }
+    } finally {
+        bat(script: "del /f /q \"${scriptFile}\" 2>nul & exit /b 0", returnStatus: true)
+    }
+}
+
+/**
  * Extract and print Unity errors/exceptions from the recent console log.
  * Called inline from runUnityCommand before it throws, so the summary
  * appears directly in the failed stage's output.

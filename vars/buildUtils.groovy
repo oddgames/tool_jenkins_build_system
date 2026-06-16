@@ -587,6 +587,7 @@ def checkCacheValidity(String unityProjectPath) { platform.checkCacheValidity(un
 def saveBuildInfo() { platform.saveBuildInfo() }
 def purgeWorkspace(String cleanCache) { platform.purgeWorkspace(cleanCache) }
 def cleanUnityCache(String unityProjectPath, String cleanCache) { platform.cleanUnityCache(unityProjectPath, cleanCache) }
+def runPrebuildScript(String script) { platform.runPrebuildScript(script) }
 def runUnityCommand(Map config) { platform.runUnityCommand(config) }
 def collectUnityErrors(List stageNames = ['Unity Prepare', 'Unity Build']) { platform.collectUnityErrors(stageNames) }
 def runUnityTests(Map config) { platform.runUnityTests(config) }

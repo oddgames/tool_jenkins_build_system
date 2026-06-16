@@ -52,6 +52,7 @@ pipeline {
         )
         booleanParam(name: 'FORCE_UPLOAD', defaultValue: false, description: 'Upload to store (auto for Release on /main)')
         booleanParam(name: 'WARMUP', defaultValue: false, description: 'Cache-warming build: runs full build but skips uploads and notifications')
+        text(name: 'PREBUILD_SCRIPT', defaultValue: '', description: 'One-off bash to run on the agent after checkout, before the build starts. Use for agent-only fixes a clean repo can\'t make — e.g. delete stray generated files or a stale Library/Bee output. Leave blank for normal builds (resets to blank each run). Best-effort: a failure warns but does not abort unless PREBUILD_FAIL_ON_ERROR=true is set in the job environment.')
     }
 
     environment {
@@ -124,6 +125,18 @@ pipeline {
                     env.CHANGESET_ID = scmVars.PLASTICSCM_CHANGESET_ID
                     env.BRANCH = scmVars.PLASTICSCM_BRANCH
                     env.PLASTIC_CHANGESET_GUID = scmVars.PLASTICSCM_CHANGESET_GUID
+                }
+            }
+        }
+
+        stage('Pre-Build Script') {
+            when {
+                expression { params.PREBUILD_SCRIPT?.trim() }
+            }
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Pre-Build Script'
+                    buildUtils.runPrebuildScript(params.PREBUILD_SCRIPT)
                 }
             }
         }
