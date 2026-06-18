@@ -2919,33 +2919,69 @@ def preflightWinget() {
 def configureGitAuth() {
     def user = env.GITHUB_TOKEN_USR?.trim()
     def pass = env.GITHUB_TOKEN_PSW?.trim()
-    if (!user || !pass) {
-        echo "[WARN] GitHub credentials not available — skipping git auth configuration"
-        return
-    }
-    echo "[INFO] Configuring git credentials for GitHub..."
+    if (user && pass) {
+        echo "[INFO] Configuring git credentials for GitHub..."
 
-    // Method 1: url.insteadOf (works for system git)
-    bat script: "@git config --global url.\"https://${user}:${pass}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true
+        // Method 1: url.insteadOf (works for system git)
+        bat script: "@git config --global url.\"https://${user}:${pass}@github.com/\".insteadOf \"https://github.com/\"", returnStatus: true
 
-    // Method 2: GIT_ASKPASS script (works for any git, including Unity's embedded git)
-    def askpassPath = "${env.WORKSPACE}\\.git-askpass.bat"
-    writeFile file: askpassPath, text: """@echo off
+        // Method 2: GIT_ASKPASS script (works for any git, including Unity's embedded git)
+        def askpassPath = "${env.WORKSPACE}\\.git-askpass.bat"
+        writeFile file: askpassPath, text: """@echo off
 echo %1 | findstr /i "password" >nul && (echo ${pass}& exit /b 0)
 echo ${user}
 """
-    env.GIT_ASKPASS = askpassPath
-    env.GIT_TERMINAL_PROMPT = '0'
+        env.GIT_ASKPASS = askpassPath
+        env.GIT_TERMINAL_PROMPT = '0'
 
-    echo "[OK] Git configured to authenticate with GitHub as ${user}"
+        echo "[OK] Git configured to authenticate with GitHub as ${user}"
+    } else {
+        echo "[WARN] GitHub credentials not available — skipping default git auth configuration"
+    }
+
+    // Optional org-scoped PATs (from GITHUB_ORG_PATS) — applied regardless of the default cred.
+    configureGitHubOrgPats()
 }
 
 /**
- * Remove git auth configuration added by configureGitAuth().
- * Called in the post block to avoid leaving credentials on disk.
+ * Apply org-scoped GitHub PAT rewrites from the GITHUB_ORG_PATS job env var
+ * ("org=credentialId" pairs). Each pair binds a Secret-text credential and adds a
+ * git insteadOf rewrite scoped to github.com/<org>/ using the x-access-token form
+ * (works for fine-grained PATs and GitHub App installation tokens). Git applies the
+ * longest-matching insteadOf, so the org PAT wins for that org while the default
+ * github credential still covers the rest of github.com.
+ *
+ * The token is passed via the credential's env var (%VAR%, expanded by cmd), never
+ * interpolated into the command by Groovy — so it isn't exposed in the script text.
+ */
+def configureGitHubOrgPats() {
+    def pats = common.parseOrgPats(env.GITHUB_ORG_PATS)
+    if (!pats) return
+
+    pats.each { p ->
+        try {
+            withCredentials([string(credentialsId: p.credId, variable: 'GH_ORG_PAT')]) {
+                def rc = bat(script: "@git config --global url.\"https://x-access-token:%GH_ORG_PAT%@github.com/${p.org}/\".insteadOf \"https://github.com/${p.org}/\"", returnStatus: true)
+                if (rc == 0) {
+                    echo "[OK] GitHub PAT configured for github.com/${p.org}/ (credential: ${p.credId})"
+                } else {
+                    echo "[WARN] Failed to configure GitHub PAT for ${p.org} (git config rc=${rc})"
+                }
+            }
+        } catch (Exception e) {
+            echo "[WARN] Skipping GitHub PAT for ${p.org} — credential '${p.credId}' unavailable: ${e.message}"
+        }
+    }
+}
+
+/**
+ * Remove git auth configuration added by configureGitAuth()/configureGitHubOrgPats().
+ * Called in the post block to avoid leaving credentials on disk. Unsets every
+ * url.*@github.com/ insteadOf rewrite (default + org-scoped). `for /f` captures git's
+ * output — which includes token-bearing key names — without echoing it to the log.
  */
 def cleanupGitAuth() {
-    bat script: '@git config --global --remove-section "url.https://*@github.com/" 2>nul', returnStatus: true
+    bat script: '@for /f "usebackq tokens=1" %%K in (`git config --global --get-regexp "url\\..*@github\\.com/" 2^>nul`) do @git config --global --unset-all "%%K" >nul 2>nul', returnStatus: true
     bat script: "@if exist \"${env.WORKSPACE}\\.git-askpass.bat\" del \"${env.WORKSPACE}\\.git-askpass.bat\" 2>nul", returnStatus: true
 }
 

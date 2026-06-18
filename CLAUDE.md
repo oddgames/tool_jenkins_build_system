@@ -114,3 +114,15 @@ Use **specific version IDs**, not bare prefix names:
 2. Add Firebase Crashlytics Admin role to `google-play-json` service account
 3. Ensure `google-services.json` exists in Unity project (`Assets/StreamingAssets/` or `Assets/Plugins/Android/`)
 4. Runs in parallel with other post-build tasks, skips silently if not configured
+
+## GitHub Auth for Private Packages (PATs)
+
+`configureGitAuth()` (in `windows.groovy`/`macos.groovy`, called from `startup()`) sets `git config --global url.insteadOf` so Unity's UPM can resolve private GitHub packages, then `cleanupGitAuth()` removes it in post.
+
+- **Default**: the `github` credential rewrites **all** of `github.com/`.
+- **Org-scoped PATs**: set job env `GITHUB_ORG_PATS="org=credentialId; org2=credId2"` (Secret-text credentials). `configureGitHubOrgPats()` adds a `git insteadOf` for `github.com/<org>/` using the `x-access-token:<PAT>@` form (fine-grained PATs / GitHub App tokens). Git uses the **longest-matching** insteadOf, so the org PAT wins for that org while the `github` cred covers the rest.
+- Tokens are passed via the bound credential's env var (`%VAR%` / `${VAR}`), **never** Groovy-interpolated into the command — avoids leaking the secret into the script text. `cleanupGitAuth()` unsets every `url.*@github.com/` entry (piped/captured so token-bearing keys aren't echoed).
+
+## Pre-Build Script (one-off agent fix-ups)
+
+`PREBUILD_SCRIPT` text param runs on the agent after checkout, before Unity opens — for agent-only state a clean repo can't fix (e.g. an orphaned `Assets/Plugins/Android/*.androidlib`, stale `Library/Bee/Android`). PowerShell on Windows agents, bash on macOS (auto by agent OS via the platform module). Best-effort: non-zero exit warns and continues unless `PREBUILD_FAIL_ON_ERROR=true`. New params don't appear until the job has run once with the updated Jenkinsfile.

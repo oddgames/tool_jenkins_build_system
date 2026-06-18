@@ -16,6 +16,15 @@
  *   CREDENTIAL_KEYSTORE_PASS     - Credential ID for keystore password (default: "android-keystore-pass")
  *   CREDENTIAL_KEYALIAS_PASS     - Credential ID for key alias password (default: "android-keyalias-pass")
  *
+ * Optional Jenkins Environment Variables:
+ *   GITHUB_ORG_PATS              - Org-scoped GitHub PATs for private package (UPM) resolution.
+ *                                  Format: "org=credentialId" pairs, ',' or ';' separated, e.g.
+ *                                  "oddgames=oddgames-scripting-pat". Each credentialId is a
+ *                                  Secret-text credential holding the PAT. Applied at Startup as a
+ *                                  git insteadOf rewrite for github.com/<org>/ and removed in post.
+ *   PREBUILD_FAIL_ON_ERROR       - "true" to abort the build if the PREBUILD_SCRIPT param fails
+ *                                  (default: warn and continue).
+ *
  * Required Jenkins Credentials (IDs configurable via env vars above):
  *   unity-credentials            - Username/password for Unity license
  *   ${CREDENTIAL_KEYSTORE_PASS}  - Secret text for keystore password

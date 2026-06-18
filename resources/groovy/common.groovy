@@ -1291,6 +1291,26 @@ def parseSelector(String input) {
     }
 }
 
+/**
+ * Parse the GITHUB_ORG_PATS job env var into a list of [org, credId] maps.
+ * Spec format: "org=credentialId" pairs separated by ',' or ';', e.g.
+ *   "oddgames=oddgames-scripting-pat; otherorg=other-pat"
+ * Each pair maps a GitHub org to a Jenkins "Secret text" credential holding a PAT.
+ * Used by configureGitHubOrgPats() to add org-scoped git insteadOf rewrites so a
+ * dedicated token authenticates github.com/<org>/ repos (e.g. private UPM packages).
+ */
+def parseOrgPats(String spec) {
+    if (!spec?.trim()) return []
+    return spec.split(/[;,]/).collect { it.trim() }.findAll { it }.collect { entry ->
+        def kv = entry.split('=', 2)
+        if (kv.size() != 2 || !kv[0].trim() || !kv[1].trim()) {
+            echo "[WARN] Ignoring malformed GITHUB_ORG_PATS entry: '${entry}' (expected 'org=credentialId')"
+            return null
+        }
+        [org: kv[0].trim(), credId: kv[1].trim()]
+    }.findAll { it != null }
+}
+
 // ============================================================================
 // BUILD NOTIFICATION HELPERS
 // ============================================================================
