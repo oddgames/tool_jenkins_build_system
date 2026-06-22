@@ -61,52 +61,36 @@ def pickNode(String nodeOverride, String defaultLabel, String branch = null) {
         try { affinityBranch = params?.BRANCH } catch (Exception e) { affinityBranch = null }
     }
 
-    // Pick an idle agent that is NOT already running/queuing THIS job, so a concurrent
-    // build never lands on a busy node and gets an @2 workspace. If every eligible node
-    // currently has a same-job conflict, wait for one to free up instead of falling back
-    // to the bare label (which is what dumped the 2nd build onto the busy node → @2).
-    // The selection lock is released between attempts so other jobs can pick meanwhile.
-    int waitMin = (env.NODE_WAIT_TIMEOUT_MIN ?: '120').toInteger()
-    int sleepSec = 15
-    int maxAttempts = Math.max(1, (waitMin * 60 / sleepSec) as int)
-
-    for (int attempt = 1; ; attempt++) {
-        def result = [status: 'fallback', node: defaultLabel, log: null, message: null]
-        try {
-            lock(resource: 'jenkins-node-selection') {
-                sleep(time: 3, unit: 'SECONDS')
-                result = _queryNodes(defaultLabel, env.JOB_NAME, affinityBranch)
-            }
-        } catch (Exception e) {
-            // Lock or pipeline step unavailable — can't do managed selection; degrade to label.
-            echo "[Node] Selection machinery unavailable (${e.message}) — falling back to label '${defaultLabel}'"
-            return defaultLabel
+    // Pick a specific agent that is NOT already running/queuing THIS job, so a concurrent
+    // build never lands on a busy node and gets an @2 workspace. Selection runs once (on the
+    // flyweight executor) and returns immediately — we never loop/sleep here, so the build
+    // doesn't sit spinning on the built-in node. If the chosen agent is momentarily busy,
+    // Jenkins' own build queue waits for its executor (shown as "waiting for executor on X"),
+    // which reuses the agent's warm workspace with no @2.
+    def result = [status: 'fallback', node: defaultLabel, log: null, message: null]
+    try {
+        lock(resource: 'jenkins-node-selection') {
+            sleep(time: 3, unit: 'SECONDS')
+            result = _queryNodes(defaultLabel, env.JOB_NAME, affinityBranch)
         }
-
-        if (result.log) echo result.log
-
-        if (result.status == 'selected') {
-            return result.node
-        }
-        if (result.status == 'fallback') {
-            // Jenkins API query threw (e.g. permissions not approved) — degrade to label.
-            echo "[Node] Could not query nodes — falling back to label '${defaultLabel}'"
-            return result.node
-        }
-        if (result.status == 'error') {
-            // Misconfiguration (label/agents missing) — fail clearly rather than @2.
-            error result.message
-        }
-
-        // status == 'wait': every eligible node is busy or already running this job.
-        if (attempt >= maxAttempts) {
-            error "[Node] Timed out after ${waitMin} min waiting for a free '${defaultLabel}' agent without a ${env.JOB_NAME} workspace conflict. Add executors/agents or raise NODE_WAIT_TIMEOUT_MIN."
-        }
-        if (attempt == 1 || attempt % 4 == 0) {
-            echo "[Node] All '${defaultLabel}' agents are busy or already running ${env.JOB_NAME} — waiting for a clean one to avoid an @2 workspace (attempt ${attempt})..."
-        }
-        sleep(time: sleepSec, unit: 'SECONDS')
+    } catch (Exception e) {
+        // Lock or pipeline step unavailable — can't do managed selection; degrade to label.
+        echo "[Node] Selection machinery unavailable (${e.message}) — falling back to label '${defaultLabel}'"
+        return defaultLabel
     }
+
+    if (result.log) echo result.log
+
+    if (result.status == 'error') {
+        // No agent free of a same-job conflict, or label/agents misconfigured — fail clearly
+        // rather than @2 or running on the controller.
+        error result.message
+    }
+    if (result.status == 'fallback') {
+        // Jenkins API query threw (e.g. permissions not approved) — degrade to label.
+        echo "[Node] Could not query nodes — falling back to label '${defaultLabel}'"
+    }
+    return result.node
 }
 
 /**
@@ -183,13 +167,20 @@ private def _queryNodes(String label, String currentJob, String branch = null) {
         def preferredNode = _lastNodeForBranch(branch)  // warm per-branch cache lives here
         def preferredEligible = false
         def nodeStatuses = []
-        def bestNode = null
+        def bestNode = null            // least-busy idle non-conflicting node — runs immediately
         def bestBusyCount = 999
+        def queueNode = null           // least-busy non-conflicting node even if currently full
+        def queueBusyCount = 999       // — Jenkins build queue waits for its executor (no @2)
+        def controllerComputer = jenkins.toComputer()  // never run builds on the controller
 
         for (def node : nodes) {
             def computer = node.toComputer()
             if (computer == null) {
                 nodeStatuses << "${node.displayName}: no computer"
+                continue
+            }
+            if (computer == controllerComputer) {
+                nodeStatuses << "${node.displayName}: controller (skipped)"
                 continue
             }
             if (!computer.isOnline()) {
@@ -239,11 +230,18 @@ private def _queryNodes(String label, String currentJob, String branch = null) {
             if (hasWorkspaceConflict) status += " [ws conflict]"
             nodeStatuses << status
 
-            if (hasFreeExecutor && !hasWorkspaceConflict) {
-                if (node.displayName == preferredNode) preferredEligible = true
-                if (busyCount < bestBusyCount) {
-                    bestNode = node.displayName
-                    bestBusyCount = busyCount
+            if (!hasWorkspaceConflict) {
+                // Track the least-busy non-conflicting node to queue for if nothing is idle.
+                if (busyCount < queueBusyCount) {
+                    queueNode = node.displayName
+                    queueBusyCount = busyCount
+                }
+                if (hasFreeExecutor) {
+                    if (node.displayName == preferredNode) preferredEligible = true
+                    if (busyCount < bestBusyCount) {
+                        bestNode = node.displayName
+                        bestBusyCount = busyCount
+                    }
                 }
             }
         }
@@ -263,10 +261,16 @@ private def _queryNodes(String label, String currentJob, String branch = null) {
             return [status: 'selected', node: bestNode, log: log, message: null]
         }
 
-        // Every eligible node is full or already running this job — tell pickNode to wait
-        // rather than overload a busy node with an @2 workspace.
-        log += "\n[Node] No '${label}' agent free of a ${currentJob} workspace conflict yet"
-        return [status: 'wait', node: null, log: log, message: null]
+        // No idle agent, but a non-conflicting one exists — return it so Jenkins' build queue
+        // waits for its executor (reusing that agent's warm workspace, never an @2).
+        if (queueNode) {
+            log += "\n[Node] Selected: ${queueNode} (busy — will queue for its executor; no other agent free of a ${currentJob} conflict)"
+            return [status: 'selected', node: queueNode, log: log, message: null]
+        }
+
+        // Every agent is already running this job — fail clearly rather than @2 or controller.
+        log += "\n[Node] No '${label}' agent free of a ${currentJob} workspace conflict"
+        return [status: 'error', node: null, log: log, message: "[Node] All '${label}' agents are already running ${currentJob}. Re-run when one finishes, or add agents/executors. (Avoiding an @2 workspace.)"]
 
     } catch (Exception e) {
         return [status: 'fallback', node: label, log: "[Node] Jenkins API query failed: ${e.message}", message: null]

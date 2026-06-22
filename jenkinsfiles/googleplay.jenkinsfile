@@ -24,9 +24,6 @@
  *                                  git insteadOf rewrite for github.com/<org>/ and removed in post.
  *   PREBUILD_FAIL_ON_ERROR       - "true" to abort the build if the PREBUILD_SCRIPT param fails
  *                                  (default: warn and continue).
- *   NODE_WAIT_TIMEOUT_MIN        - How long pickNode() waits for an agent free of a same-job
- *                                  workspace conflict before failing (default: 120). Prevents a
- *                                  concurrent build of this job landing on a busy node (@2 workspace).
  *
  * Required Jenkins Credentials (IDs configurable via env vars above):
  *   unity-credentials            - Username/password for Unity license
