@@ -5198,6 +5198,47 @@ def analyzeBuildReport(Map config = [:]) {
  * @param workspacePath Path to the Plastic workspace (defaults to WORKSPACE/plastic)
  */
 /**
+ * Delete Windows reserved-device-name files (nul, con, aux, prn, com1-9, lpt1-9 — with or
+ * without an extension) anywhere under the workspace. These are legal filenames on
+ * macOS/Linux and can be committed to Plastic from those agents, but Windows can't
+ * materialise them: `cm update --forced` fails with "Stream does not support seeking" and a
+ * plain `del` can't remove them (the name resolves to the device). PowerShell with the
+ * \\?\ extended-length path prefix can. Best-effort — never fails the build.
+ *
+ * Note: if the file is *controlled* in Plastic, cm will try to re-fetch it on the next
+ * update (and warn again); the permanent fix is to remove it from the Plastic repo.
+ */
+def deleteReservedNameFiles(String wsPath) {
+    if (!wsPath) return
+    def psFile = "${env.WORKSPACE}\\_reserved_name_cleanup.ps1"
+    // Single-quoted Groovy heredoc: no Groovy interpolation, and the \\?\ prefix is built
+    // from char codes ([char]92='\', 63='?') so there are no backslashes to escape.
+    writeFile file: psFile, text: '''param([string]$Ws)
+if (-not (Test-Path -LiteralPath $Ws)) { return }
+$prefix = ([char]92, [char]92, [char]63, [char]92) -join ''
+$found = 0
+Get-ChildItem -LiteralPath $Ws -Recurse -Force -ErrorAction SilentlyContinue |
+  Where-Object { -not $_.PSIsContainer -and $_.BaseName -match '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$' } |
+  ForEach-Object {
+    $found++
+    try {
+      Remove-Item -LiteralPath ($prefix + $_.FullName) -Force -ErrorAction Stop
+      Write-Host ('  Deleted reserved-name file: ' + $_.FullName)
+    } catch {
+      Write-Host ('  WARNING: could not delete ' + $_.FullName + ' : ' + $_.Exception.Message)
+    }
+  }
+if ($found -eq 0) { Write-Host '  No reserved-name files found' }
+'''
+    try {
+        echo "  Scanning for Windows reserved-name files (nul, con, aux, ...) under ${wsPath}..."
+        bat(script: "@powershell -NoProfile -ExecutionPolicy Bypass -File \"${psFile}\" \"${wsPath}\"", returnStatus: true)
+    } finally {
+        bat(script: "@if exist \"${psFile}\" del /f /q \"${psFile}\" 2>nul & exit /b 0", returnStatus: true)
+    }
+}
+
+/**
  * Clean Plastic SCM workspace by removing private (untracked) files.
  * Call this BEFORE checkout to ensure a clean workspace state.
  * The checkout itself will overwrite any modified tracked files, so we only
@@ -5210,12 +5251,15 @@ def cleanPlasticWorkspace(String cleanCache = null, String workspacePath = null)
     def cacheTypes = cleanCache?.split(',')?.collect { it.trim() } ?: []
     def doVerify = cacheTypes.contains('Verify Workspace')
 
+    // Remove Windows reserved-name files (nul, con, ...) the normal `del` and cm can't handle.
+    deleteReservedNameFiles(wsPath)
+
     // Single consolidated bat call: check status, undo changes, remove private files, optional verify
     def result = bat(script: """@echo off
 setlocal EnableDelayedExpansion
 if not exist "${wsPath}\\.plastic" (
     echo   No Plastic workspace found at ${wsPath} >&2
-    echo NO_WORKSPACE
+    echo RESULT_STATUS=NO_WORKSPACE
     exit /b 0
 )
 echo Cleaning Plastic workspace: ${wsPath} >&2
@@ -5239,8 +5283,8 @@ if "!NEED_UNDO!"=="1" (
     echo   Running cm undo . -r ... >&2
     cm undo . -r
     if errorlevel 1 (
-        echo UNDO_FAILED
-        exit /b 1
+        echo RESULT_STATUS=UNDO_FAILED
+        exit /b 0
     )
     echo   Reverted !CHANGED! changed + !DELETED! locally deleted file^(s^) >&2
 ) else (
@@ -5262,23 +5306,31 @@ if !PRIVATE! GTR 0 (
 ) else (
     echo   No private files >&2
 )
-${doVerify ? """REM Verify workspace file integrity
+${doVerify ? """REM Verify workspace file integrity. Best-effort: a reserved-name file (e.g. 'nul')
+REM or any single bad file must NOT fail the build. cm output -> stderr, exit code ignored.
 echo   Verifying workspace file integrity ^(cm update --forced^)... >&2
-cm update --forced --silent
+cm update --forced --silent 1>&2
 if errorlevel 1 (
-    echo   WARNING: cm update --forced returned non-zero >&2
+    echo   WARNING: cm update --forced reported issues ^(e.g. a reserved-name file like 'nul'^) - continuing >&2
 ) else (
     echo   Workspace file integrity verified >&2
 )""" : ''}
 echo Plastic workspace cleanup complete >&2
-echo CLEANUP_DONE
-echo !CHANGED!
-echo !DELETED!
-echo !PRIVATE!""", returnStdout: true).trim()
+echo RESULT_STATUS=OK
+echo RESULT_CHANGED=!CHANGED!
+echo RESULT_DELETED=!DELETED!
+echo RESULT_PRIVATE=!PRIVATE!
+exit /b 0""", returnStdout: true).trim()
 
     echo "  plasticCleanup stdout: ${result}"
+    // Parse by prefixed markers (RESULT_*) so output from cm update — which prints
+    // "<file> unchecked out correctly" to stdout — can't shift positional fields.
     def lines = result.readLines().collect { it.trim() }.findAll { it }
-    def status = lines[0]
+    def field = { String key ->
+        def line = lines.find { it.startsWith("${key}=") }
+        return line ? line.substring(key.length() + 1) : null
+    }
+    def status = field('RESULT_STATUS')
 
     if (status == 'NO_WORKSPACE') {
         echo "[INFO] No Plastic workspace found at ${wsPath}, skipping cleanup"
@@ -5289,9 +5341,9 @@ echo !PRIVATE!""", returnStdout: true).trim()
         error("[ERROR] Failed to undo workspace changes. Workspace may be corrupted - check Plastic SCM status on this agent.")
     }
 
-    def changed = lines.size() > 1 ? lines[1] : '0'
-    def deleted = lines.size() > 2 ? lines[2] : '0'
-    def privates = lines.size() > 3 ? lines[3] : '0'
+    def changed = field('RESULT_CHANGED') ?: '0'
+    def deleted = field('RESULT_DELETED') ?: '0'
+    def privates = field('RESULT_PRIVATE') ?: '0'
 
     echo "[OK] Plastic workspace cleanup complete (changed: ${changed}, deleted: ${deleted}, private: ${privates})"
 }

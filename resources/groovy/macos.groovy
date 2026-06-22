@@ -3635,10 +3635,10 @@ fi
 [ \$PRIVATE -gt 0 ] && echo "  Removed \$PRIVATE private items" >&2 || echo "  No private files" >&2
 ${doVerify ? """# Verify workspace file integrity
 echo "  Verifying workspace file integrity (cm update --forced)..." >&2
-if cm update --forced --silent; then
+if cm update --forced --silent 1>&2; then
     echo "  Workspace file integrity verified" >&2
 else
-    echo "  WARNING: cm update --forced returned non-zero" >&2
+    echo "  WARNING: cm update --forced returned non-zero; continuing" >&2
 fi""" : ''}
 echo "Plastic workspace cleanup complete" >&2
 echo "CLEANUP_DONE"
