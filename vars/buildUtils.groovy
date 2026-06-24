@@ -171,16 +171,18 @@ private def _queryNodes(String label, String currentJob, String branch = null) {
         def bestBusyCount = 999
         def queueNode = null           // least-busy non-conflicting node even if currently full
         def queueBusyCount = 999       // — Jenkins build queue waits for its executor (no @2)
-        def controllerComputer = jenkins.toComputer()  // never run builds on the controller
 
         for (def node : nodes) {
+            // Never run builds on the controller. Identity compare against the Jenkins
+            // singleton — no method call, so it can't trip a sandbox rejection (which would
+            // send this whole query to the 'fallback' path and bypass conflict detection).
+            if (node == jenkins) {
+                nodeStatuses << "controller (skipped)"
+                continue
+            }
             def computer = node.toComputer()
             if (computer == null) {
                 nodeStatuses << "${node.displayName}: no computer"
-                continue
-            }
-            if (computer == controllerComputer) {
-                nodeStatuses << "${node.displayName}: controller (skipped)"
                 continue
             }
             if (!computer.isOnline()) {
