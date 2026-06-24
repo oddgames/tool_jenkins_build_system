@@ -2260,6 +2260,20 @@ def archiveXcodeProject(Map config) {
 
     echo "[INFO] Xcode archive configuration: ${configuration}"
 
+    // Automatic signing reconciles the embedded entitlements DOWN to whatever the
+    // provisioning profile it resolves grants. A stale managed profile on this agent
+    // (minted before a capability was enabled on the App ID) makes Xcode silently
+    // strip that entitlement from the signed binary even though the entitlements file
+    // requested it — e.g. com.apple.developer.applesignin missing → 'Continue with
+    // Apple' fails at runtime with ASAuthorizationError 1000. Per-job opt-in: jobs
+    // that depend on an entitlement list it in config.requiredEntitlements and the
+    // build fails loudly here instead of shipping broken auth. Always dump the signed
+    // entitlements to the log for post-hoc inspection.
+    def required = (config.requiredEntitlements ?: []) as List
+    def entGate = required.collect { ent -> """
+            /usr/bin/codesign -d --entitlements :- "\$APP_PATH" 2>/dev/null | grep -q '${ent}' \\
+                || { echo "[ERROR] Required entitlement missing from signed binary: ${ent} (stale provisioning profile on this agent? purge ~/Library/MobileDevice/Provisioning Profiles and re-fetch)"; exit 1; }""" }.join("\n")
+
     sh """
         cd "${xcodePath}"
         set -o pipefail
@@ -2297,6 +2311,14 @@ def archiveXcodeProject(Map config) {
         fi
 
         echo "[OK] Archive created successfully"
+
+        # --- entitlements visibility + optional required-entitlement gate ---
+        APP_PATH=\$(find "${archivePath}/Products/Applications" -maxdepth 1 -name '*.app' | head -1)
+        if [ -n "\$APP_PATH" ]; then
+            echo "[INFO] Signed entitlements for \$(basename "\$APP_PATH"):"
+            /usr/bin/codesign -d --entitlements :- "\$APP_PATH" 2>/dev/null || true
+${entGate}
+        fi
     """
 }
 
@@ -3299,6 +3321,16 @@ def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConf
                 break
             case 'DerivedData':
                 commands << "force_clean \"\${HOME}/Library/Developer/Xcode/DerivedData\""
+                break
+            case 'Provisioning Profiles':
+                // Purge cached provisioning profiles so the next build re-fetches fresh ones —
+                // fixes stale/expired managed profiles left on this agent (see archiveXcodeProject).
+                commands << "force_clean \"\${HOME}/Library/MobileDevice/Provisioning Profiles\""
+                commands << "mkdir -p \"\${HOME}/Library/MobileDevice/Provisioning Profiles\""
+                break
+            case 'Xcode Archives':
+                // Remove accumulated Xcode archives (~/Library/Developer/Xcode/Archives).
+                commands << "force_clean \"\${HOME}/Library/Developer/Xcode/Archives\""
                 break
             case 'None':
             case '----------':

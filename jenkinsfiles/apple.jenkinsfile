@@ -42,13 +42,13 @@ pipeline {
         extendedChoice(
             name: 'CLEAN_CACHE',
             type: 'PT_CHECKBOX',
-            value: 'ShaderCache,BuildCache,ArtifactDB,Temp,ScriptAssemblies,PackageCache,Bee,IL2CPP,Addressables,DerivedData,Verify Workspace,Clear Library,Clear Workspace,Force Preflight',
+            value: 'ShaderCache,BuildCache,ArtifactDB,Temp,ScriptAssemblies,PackageCache,Bee,IL2CPP,Addressables,DerivedData,Provisioning Profiles,Xcode Archives,Verify Workspace,Clear Library,Clear Workspace,Force Preflight',
             defaultValue: '',
             multiSelectDelimiter: ',',
             quoteValue: false,
             saveJSONParameterToFile: false,
-            visibleItemCount: 14,
-            description: 'Clean Unity cache dirs before build (select multiple). Verify Workspace=Force re-check all tracked files against server. Clear Library=Delete entire Library folder. Clear Workspace=Wipe entire Jenkins workspace and start from scratch. Force Preflight=Re-run all preflight checks even if they passed recently'
+            visibleItemCount: 16,
+            description: 'Clean Unity cache dirs before build (select multiple). Provisioning Profiles=Purge ~/Library/MobileDevice/Provisioning Profiles so fresh ones are re-fetched (fixes stale/expired signing profiles). Xcode Archives=Delete ~/Library/Developer/Xcode/Archives. DerivedData=Delete Xcode DerivedData. Verify Workspace=Force re-check all tracked files against server. Clear Library=Delete entire Library folder. Clear Workspace=Wipe entire Jenkins workspace and start from scratch. Force Preflight=Re-run all preflight checks even if they passed recently'
         )
         booleanParam(name: 'FORCE_UPLOAD', defaultValue: false, description: 'Upload to store (auto for Release on /main)')
         booleanParam(name: 'WARMUP', defaultValue: false, description: 'Cache-warming build: runs full build but skips uploads and notifications')
