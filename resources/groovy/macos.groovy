@@ -4462,33 +4462,13 @@ Then verify:
     }
     echo "[OK] ${firebaseCheck.message}"
 
-    // Verify Firebase CLI works — validation failures are warnings, not build-breaking errors
-    // Crashlytics upload is optional; if validation fails, disable it for this build
-    def firebaseCmd = env.FIREBASE_CMD ?: 'firebase'
-    try {
-        withCredentials([file(credentialsId: 'google-play-json', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
-            // Use Jenkins timeout (cross-platform) instead of Unix timeout (not available on macOS)
-            timeout(time: 60, unit: 'SECONDS') {
-                sh """
-                    "${firebaseCmd}" --version || exit 1
-                    echo "[OK] Firebase CLI available"
-
-                    echo "[INFO] Validating Firebase App ID: ${firebaseAppId}"
-                    "${firebaseCmd}" apps:sdkconfig --app="${firebaseAppId}" --non-interactive >/dev/null 2>&1
-                    if [ \$? -ne 0 ]; then
-                        echo "[WARNING] Firebase App ID validation failed - Crashlytics upload will be skipped"
-                        echo "  To fix: Grant the google-play-json service account Firebase Admin role"
-                        exit 1
-                    fi
-                    echo "[OK] Firebase App ID validated"
-                """
-            }
-        }
-        echo "[OK] Firebase CLI preflight passed (App ID: ${firebaseAppId})"
-    } catch (Exception e) {
-        echo "[WARNING] Firebase validation failed — disabling Crashlytics upload for this build"
-        env.UPLOAD_CRASHLYTICS_SYMBOLS = 'false'
-    }
+    // Firebase CLI is present (checked above) and the App ID is extracted + well-formed.
+    // We deliberately do NOT pre-validate with `firebase apps:sdkconfig`: that call needs
+    // Firebase *read* access (Firebase Viewer), a different permission than the symbol upload
+    // needs (Firebase Crashlytics Admin) — so the read check could wrongly disable an upload
+    // that would actually succeed. The real `crashlytics:symbols:upload` is the source of
+    // truth and fails soft (marks the build unstable, never breaks it).
+    echo "[OK] Firebase CLI preflight passed (App ID: ${firebaseAppId}); upload is verified at upload time"
 }
 
 // ============================================================================
@@ -4593,20 +4573,24 @@ def uploadiOSCrashlyticsSymbols(String buildPath, String appId) {
         done
     """
 
-    // Upload dSYM files to Crashlytics
+    // Upload dSYM files to Crashlytics. Best-effort: a failure here (e.g. the service account
+    // lacks the Firebase Crashlytics Admin role) marks the build unstable but never breaks it.
     def firebaseCmd = env.FIREBASE_CMD ?: 'firebase'
     withCredentials([file(credentialsId: 'google-play-json', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
-        sh """
+        def rc = sh(returnStatus: true, script: """
             echo "[INFO] Uploading iOS dSYMs to Crashlytics..."
-
             "${firebaseCmd}" crashlytics:symbols:upload --app="${appId}" "${dsymPath}"
-            if [ \$? -ne 0 ]; then
-                echo "[ERROR] Crashlytics dSYM upload failed"
-                exit 1
-            fi
-
+        """)
+        if (rc == 0) {
             echo "[OK] Crashlytics dSYMs uploaded successfully"
-        """
+        } else {
+            echo "[WARN] Crashlytics dSYM upload failed (exit ${rc}) — continuing (build not failed)"
+            echo "[WARN] If this is a permissions error, grant the 'google-play-json' service account the"
+            echo "[WARN] Firebase Crashlytics Admin role on the app's Firebase project (not full Firebase Admin)."
+            if (ensureCommon()) {
+                common.setUnstable("Crashlytics dSYM upload failed - check google-play-json Firebase Crashlytics Admin role")
+            }
+        }
     }
 }
 
