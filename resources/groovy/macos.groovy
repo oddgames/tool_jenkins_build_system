@@ -2286,6 +2286,8 @@ def archiveXcodeProject(Map config) {
             -destination "generic/platform=iOS" \\
             -archivePath "${archivePath}" \\
             -allowProvisioningUpdates \\
+            DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \\
+            GCC_GENERATE_DEBUGGING_SYMBOLS=YES \\
             2>&1 | tee "${logPath}" | \$PRETTY
 
         XCODE_EXIT=\${PIPESTATUS[0]}
@@ -4425,6 +4427,7 @@ Or set GOOGLE_SERVICES_CREDENTIAL_ID in the Jenkins job config to a credential c
     }
 
     env.FIREBASE_APP_ID = firebaseAppId
+    env.FIREBASE_CONFIG_PATH = configSource   // used by upload-symbols (-gsp) for iOS dSYM upload
     echo "[INFO] Using Firebase config from ${configSource}"
     echo "[INFO] Extracted Firebase App ID: ${firebaseAppId}"
 
@@ -4565,35 +4568,73 @@ def uploadiOSCrashlyticsSymbols(String buildPath, String appId) {
         return
     }
 
-    // List dSYM files for logging
+    // List dSYM files + inspect their contents. This tells us WHY an upload might fail with
+    // "No native libraries found": if dwarfdump shows no UUIDs or the DWARF binary is tiny,
+    // the dSYM is stripped/empty (a build-settings problem, not an upload/permissions one).
     sh """
         echo "[INFO] Found dSYM files in: ${dsymPath}"
         find "${dsymPath}" -name "*.dSYM" -type d | while read dsym; do
-            echo "  \$(basename \"\$dsym\")"
+            echo "  dSYM: \$(basename \"\$dsym\")"
+            echo "    -- dwarfdump --uuid --"
+            dwarfdump --uuid "\$dsym" 2>&1 | sed 's/^/    /' || echo "    (dwarfdump --uuid failed)"
+            echo "    -- DWARF payload (size = symbols present?) --"
+            ls -la "\$dsym/Contents/Resources/DWARF/" 2>/dev/null | sed 's/^/    /' || echo "    (no DWARF dir — dSYM has no debug info)"
         done
     """
 
-    // Upload dSYM files to Crashlytics. Best-effort: a failure here (e.g. the service account
-    // lacks the Firebase Crashlytics Admin role) marks the build unstable but never breaks it.
+    // Upload the dSYMs. Best-effort: never fails the build.
+    //
+    // Prefer the Firebase iOS SDK's `upload-symbols` tool — it's purpose-built for iOS dSYMs,
+    // authenticates off the GoogleService-Info.plist (no service-account/IAM needed), and avoids
+    // the generic CLI's native-symbol path that trips with "No native libraries found". Fall back
+    // to `firebase crashlytics:symbols:upload` if the tool isn't present.
     def firebaseCmd = env.FIREBASE_CMD ?: 'firebase'
-    withCredentials([file(credentialsId: 'google-play-json', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+    def gsp = env.FIREBASE_CONFIG_PATH ?: ''
+    def uploaded = false
+
+    // upload-symbols ships in the FirebaseCrashlytics CocoaPod under the Xcode project (Pods/).
+    def uploadSymbols = sh(returnStdout: true, script: """
+        find "${buildPath}" -name upload-symbols -type f 2>/dev/null | head -1
+    """).trim()
+
+    if (uploadSymbols && gsp.endsWith('.plist')) {
+        echo "[INFO] Uploading via upload-symbols (${uploadSymbols})..."
         def rc = sh(returnStatus: true, script: """
-            echo "[INFO] Uploading iOS dSYMs to Crashlytics..."
-            "${firebaseCmd}" crashlytics:symbols:upload --app="${appId}" "${dsymPath}"
+            chmod +x "${uploadSymbols}" 2>/dev/null || true
+            "${uploadSymbols}" -gsp "${gsp}" -p ios "${dsymPath}"
         """)
         if (rc == 0) {
-            echo "[OK] Crashlytics dSYMs uploaded successfully"
+            uploaded = true
+            echo "[OK] Crashlytics dSYMs uploaded via upload-symbols"
         } else {
-            echo "[WARN] Crashlytics dSYM upload failed (exit ${rc}) — build NOT failed, continuing."
-            echo "[WARN] See the crashlytics error above for the real cause. Common ones:"
-            echo "[WARN]   * 'No native libraries found' / dSYM error -> the dSYMs have no usable symbols."
-            echo "[WARN]     Check the iOS build produces full dSYMs (DEBUG_INFORMATION_FORMAT=dwarf-with-dsym"
-            echo "[WARN]     and dSYMs not stripped); verify with: dwarfdump --uuid <UnityFramework.framework.dSYM>"
-            echo "[WARN]   * 403 / permission denied -> grant the google-play-json service account the"
-            echo "[WARN]     'Firebase Crash Symbol Uploader' role (least privilege; NOT full Firebase Admin)."
-            if (ensureCommon()) {
-                common.setUnstable("Crashlytics dSYM upload failed - see the crashlytics error in the log (not necessarily permissions)")
+            echo "[WARN] upload-symbols failed (exit ${rc}); falling back to the firebase CLI..."
+        }
+    } else {
+        echo "[INFO] upload-symbols not found (or no .plist config) — using the firebase CLI"
+    }
+
+    if (!uploaded) {
+        withCredentials([file(credentialsId: 'google-play-json', variable: 'GOOGLE_APPLICATION_CREDENTIALS')]) {
+            def rc = sh(returnStatus: true, script: """
+                echo "[INFO] Uploading iOS dSYMs to Crashlytics via firebase CLI..."
+                "${firebaseCmd}" crashlytics:symbols:upload --app="${appId}" "${dsymPath}"
+            """)
+            if (rc == 0) {
+                uploaded = true
+                echo "[OK] Crashlytics dSYMs uploaded successfully"
             }
+        }
+    }
+
+    if (!uploaded) {
+        echo "[WARN] Crashlytics dSYM upload failed — build NOT failed, continuing."
+        echo "[WARN] See the crashlytics error(s) above. If it says 'No native libraries found',"
+        echo "[WARN] the dSYMs have no usable symbols — check the dwarfdump/DWARF output above. The"
+        echo "[WARN] archive now forces DEBUG_INFORMATION_FORMAT=dwarf-with-dsym, so a fresh (clean)"
+        echo "[WARN] build should produce full dSYMs. A 403 instead means the service account needs"
+        echo "[WARN] the 'Firebase Crash Symbol Uploader' role (not full Firebase Admin)."
+        if (ensureCommon()) {
+            common.setUnstable("Crashlytics dSYM upload failed - see crashlytics/dwarfdump output in the log")
         }
     }
 }
