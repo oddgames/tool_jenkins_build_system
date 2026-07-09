@@ -4584,11 +4584,15 @@ def uploadiOSCrashlyticsSymbols(String buildPath, String appId) {
         if (rc == 0) {
             echo "[OK] Crashlytics dSYMs uploaded successfully"
         } else {
-            echo "[WARN] Crashlytics dSYM upload failed (exit ${rc}) — continuing (build not failed)"
-            echo "[WARN] If this is a permissions error, grant the 'google-play-json' service account the"
-            echo "[WARN] Firebase Crashlytics Admin role on the app's Firebase project (not full Firebase Admin)."
+            echo "[WARN] Crashlytics dSYM upload failed (exit ${rc}) — build NOT failed, continuing."
+            echo "[WARN] See the crashlytics error above for the real cause. Common ones:"
+            echo "[WARN]   * 'No native libraries found' / dSYM error -> the dSYMs have no usable symbols."
+            echo "[WARN]     Check the iOS build produces full dSYMs (DEBUG_INFORMATION_FORMAT=dwarf-with-dsym"
+            echo "[WARN]     and dSYMs not stripped); verify with: dwarfdump --uuid <UnityFramework.framework.dSYM>"
+            echo "[WARN]   * 403 / permission denied -> grant the google-play-json service account the"
+            echo "[WARN]     'Firebase Crash Symbol Uploader' role (least privilege; NOT full Firebase Admin)."
             if (ensureCommon()) {
-                common.setUnstable("Crashlytics dSYM upload failed - check google-play-json Firebase Crashlytics Admin role")
+                common.setUnstable("Crashlytics dSYM upload failed - see the crashlytics error in the log (not necessarily permissions)")
             }
         }
     }
