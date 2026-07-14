@@ -358,8 +358,12 @@ public static void Build(string outputPath, BuildOptions options)
                 return playerReport;
             }
 
-            LogWarning($"Catalog validation FAILED: {missing.Count} of {checkedCount} entries have no catalog location " +
-                       $"(stale incremental cache). First: '{missing[0]}'. Purging cache and rebuilding the player once...");
+            // Surface the full list up-front, then try one clean rebuild in case it was only a
+            // stale incremental cache. Most breakage is fixed by the rebuild; anything that survives
+            // it is a genuinely unbuildable asset that must not ship blank.
+            ReportBrokenAddressables(missing, checkedCount, "before rebuild", outputPath);
+            LogWarning($"Catalog validation found {missing.Count} of {checkedCount} entries with no catalog location. " +
+                       "Purging cache and rebuilding the player once to rule out a stale incremental cache...");
 
             AddressableAssetSettings.CleanPlayerContent();
             PurgeAddressablesBuildCache();
@@ -374,9 +378,11 @@ public static void Build(string outputPath, BuildOptions options)
             var stillMissing = FindGuidsMissingFromCatalog(out checkedCount);
             if (stillMissing != null && stillMissing.Count > 0)
             {
+                string report = ReportBrokenAddressables(stillMissing, checkedCount, "after clean rebuild", outputPath);
                 throw new Exception(
-                    $"Addressables catalog is STILL missing {stillMissing.Count} of {checkedCount} entries after a clean rebuild " +
-                    $"(first: '{stillMissing[0]}'). An asset is likely unbuildable — failing the build rather than shipping blank content.");
+                    $"Addressables catalog is STILL missing {stillMissing.Count} of {checkedCount} entries after a clean rebuild — " +
+                    $"these assets are unbuildable, not a stale cache. Failing rather than shipping blank content. " +
+                    $"Full grouped list: {report}");
             }
 
             Log("✓ Catalog validation passed after clean rebuild");
@@ -384,15 +390,15 @@ public static void Build(string outputPath, BuildOptions options)
         }
 
         /// <summary>
-        /// Returns the addresses of shipped entries whose GUID has no location in the freshly-built
-        /// catalog, or null if the catalog couldn't be loaded (validation skipped). Loads the built
-        /// catalog with the same runtime API that resolves AssetReferences (LoadContentCatalogAsync →
-        /// IResourceLocator.Locate), so the check matches exactly how the game fails at runtime — no
-        /// binary parsing. Only groups that both ship (IncludeInBuild) and index GUIDs
-        /// (IncludeGUIDInCatalog) are checked — that is exactly the set an AssetReference resolves by
-        /// GUID.
+        /// Returns the shipped entries whose GUID has no location in the freshly-built catalog
+        /// (group + address + guid for each), or null if the catalog couldn't be loaded (validation
+        /// skipped). Loads the built catalog with the same runtime API that resolves AssetReferences
+        /// (LoadContentCatalogAsync → IResourceLocator.Locate), so the check matches exactly how the
+        /// game fails at runtime — no binary parsing. Only groups that both ship (IncludeInBuild) and
+        /// index GUIDs (IncludeGUIDInCatalog) are checked — that is exactly the set an AssetReference
+        /// resolves by GUID.
         /// </summary>
-        private static List<string> FindGuidsMissingFromCatalog(out int checkedCount)
+        private static List<BrokenAddressable> FindGuidsMissingFromCatalog(out int checkedCount)
         {
             checkedCount = 0;
 
@@ -429,7 +435,7 @@ public static void Build(string outputPath, BuildOptions options)
             try
             {
                 var settings = AddressableAssetSettingsDefaultObject.Settings;
-                var missing = new List<string>();
+                var missing = new List<BrokenAddressable>();
                 var gathered = new List<AddressableAssetEntry>();
 
                 foreach (var group in settings.groups)
@@ -452,7 +458,7 @@ public static void Build(string outputPath, BuildOptions options)
                         checkedCount++;
                         // type: null → pure key-existence check, mirroring how AssetReference resolves.
                         if (!locator.Locate(e.guid, null, out _))
-                            missing.Add(e.address);
+                            missing.Add(new BrokenAddressable { Group = group.Name, Address = e.address, Guid = e.guid, AssetPath = e.AssetPath });
                     }
                 }
 
@@ -462,6 +468,89 @@ public static void Build(string outputPath, BuildOptions options)
             {
                 Addressables.Release(handle);
             }
+        }
+
+        /// <summary>A shipped Addressable entry that has no location in the built catalog.</summary>
+        private sealed class BrokenAddressable
+        {
+            public string Group;
+            public string Address;
+            public string Guid;
+            public string AssetPath;
+        }
+
+        /// <summary>
+        /// Log a grouped, scannable summary of broken Addressable entries and write the FULL list to
+        /// a file next to the build output so Jenkins archives it as a build artifact. Returns the
+        /// report path (or a short note if it couldn't be written) for the failure message. Each
+        /// listed entry ships (IncludeInBuild) and is GUID-indexed (IncludeGUIDInCatalog) yet has no
+        /// catalog location — i.e. loading it via AssetReference throws "No Location found for
+        /// Key=&lt;guid&gt;" at runtime (blank icons / missing content).
+        /// </summary>
+        private static string ReportBrokenAddressables(List<BrokenAddressable> broken, int checkedCount, string phase, string outputPath)
+        {
+            var byGroup = broken.GroupBy(b => b.Group).OrderByDescending(g => g.Count()).ToList();
+
+            // Console: banner + per-group counts + a capped sample so the build log stays scannable.
+            LogError($"========== ADDRESSABLES: {broken.Count} BROKEN ENTRIES ({phase}) ==========");
+            LogError($"{broken.Count} of {checkedCount} GUID-indexed, shipped entries have NO catalog location.");
+            LogError("They will fail at runtime with \"No Location found for Key=<guid>\" (blank icons / missing content).");
+            LogError("Broken entries per group:");
+            foreach (var g in byGroup)
+                LogError($"  {g.Count(),6}  {g.Key}");
+
+            const int sampleCap = 25;
+            LogError($"First {Math.Min(sampleCap, broken.Count)} broken assets:");
+            foreach (var b in broken.Take(sampleCap))
+                LogError($"  [{b.Group}] {b.Address}  (guid {b.Guid})");
+            if (broken.Count > sampleCap)
+                LogError($"  ... and {broken.Count - sampleCap} more — see the full report file.");
+
+            // File: the complete grouped list, written next to the build output for archiving.
+            string reportPath = null;
+            try
+            {
+                string dir = !string.IsNullOrEmpty(outputPath) ? Path.GetDirectoryName(outputPath) : null;
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                    dir = BuildPathSafe();
+
+                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                {
+                    reportPath = Path.Combine(dir, "AddressablesBrokenEntries.txt");
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine($"Addressables broken-entry report ({phase})");
+                    sb.AppendLine($"{broken.Count} of {checkedCount} GUID-indexed, shipped entries have no catalog location.");
+                    sb.AppendLine("Each throws \"No Location found for Key=<guid>\" when loaded via AssetReference at runtime.");
+                    sb.AppendLine("Columns: <guid>\\t<address>");
+                    sb.AppendLine();
+                    foreach (var g in byGroup)
+                    {
+                        sb.AppendLine($"=== {g.Key}  ({g.Count()}) ===");
+                        foreach (var b in g.OrderBy(x => x.Address, StringComparer.Ordinal))
+                            sb.AppendLine($"{b.Guid}\t{b.Address}");
+                        sb.AppendLine();
+                    }
+                    File.WriteAllText(reportPath, sb.ToString());
+                    LogError($"Full broken-entry list written to: {reportPath}");
+                }
+                else
+                {
+                    LogWarning("No writable build directory found — full broken-entry report not written (console list above is complete up to the cap).");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogWarning($"Could not write broken-entry report file: {ex.Message}");
+            }
+
+            LogError("======================================================");
+            return reportPath ?? "(report file could not be written — see the log above)";
+        }
+
+        /// <summary>BuildPath, but returns null instead of throwing when BUILD_PATH isn't set.</summary>
+        private static string BuildPathSafe()
+        {
+            try { return BuildPath; } catch { return null; }
         }
 
         private static string LocateBuiltCatalog()
