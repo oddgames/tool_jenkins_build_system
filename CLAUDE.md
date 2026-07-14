@@ -115,14 +115,17 @@ Use **specific version IDs**, not bare prefix names:
 3. Ensure `google-services.json` exists in Unity project (`Assets/StreamingAssets/` or `Assets/Plugins/Android/`)
 4. Runs in parallel with other post-build tasks, skips silently if not configured
 
-## Addressables Content Build
+## Addressables Content Build + Catalog Validation
 
-`Pipeline.Build()` (in `Pipeline.cs`) calls `BuildAddressables()` in the **same Editor session**, right before `BuildPipeline.BuildPlayer()`, so every player ships a catalog matching the current asset GUIDs. Before this, nothing in the pipeline built Addressables content — builds packaged whatever catalog was last built manually, producing `No Location found for Key=<guid>` at runtime (e.g. blank preview icons). All platforms funnel through `Pipeline.Build()`, so this one insertion covers Google Play/Amazon/Apple/Steam/Switch.
+`Pipeline.Build()` (in `Pipeline.cs`) runs the player build, then **validates the shipped catalog** — all in the same Editor session. All platforms funnel through `Pipeline.Build()`, so this covers Google Play/Amazon/Apple/Steam/Switch. This exists because catalogs can ship missing entries, producing `No Location found for Key=<guid>` at runtime (e.g. blank preview icons).
 
-- Calls `AddressableAssetSettings.BuildPlayerContent(out result)` directly (Addressables is always in the game projects). Skips only if no `AddressableAssetSettings` asset is configured (`SettingsExists` false).
-- **Env vars**: `BUILD_ADDRESSABLES` (default `true`, set `false` to skip); `CLEAN_ADDRESSABLES` (default `false`, set `true` to clean first → full rebuild instead of fast incremental).
-- **Fails the build** on a content-build error — shipping a stale/broken catalog is exactly what this step prevents. Reflection's `TargetInvocationException` is unwrapped so the real cause is legible.
-- Do **not** rely on the Editor preference "Build Addressables on Player Build" — it's per-machine and untracked (`m_BuildAddressablesWithPlayerBuild: 0` = `PreferencesValue`), so batchmode CI agents don't honor it. This in-pipeline step is what guarantees the rebuild.
+**Content build** (`EnsureAddressablesContentBuilt`): only builds Addressables up-front when the player build *won't* itself (project setting off). When the setting is `PreferencesValue`/`BuildWithPlayer` (the usual case), Unity's `AddressablesPlayerBuildProcessor` already builds content during the player build, so building up-front would double-build. Env: `BUILD_ADDRESSABLES` (default `true`, `false` skips); `CLEAN_ADDRESSABLES` (default `false`, `true` forces a full rebuild).
+
+**Catalog validation** (`ValidateCatalog`, warn-only): after the player build, loads the built catalog with the runtime API (`LoadContentCatalogAsync` → `IResourceLocator.Locate`) and checks every shipped, GUID-indexed entry (`IncludeInBuild && IncludeGUIDInCatalog`) resolves — exactly how an `AssetReference` resolves at runtime.
+- If entries are missing → purge the SBP `BuildCache` + `CleanPlayerContent`, rebuild the player **once** (auto-fixes a stale incremental cache).
+- Anything **still** missing after the clean rebuild is surfaced as the **full grouped list in the build log** AND written to `AddressablesBrokenEntries.txt` under `ARTIFACT_PATH` (auto-archived). The build is **NOT failed** — the report file's existence is a marker.
+- The Jenkins pipeline calls `buildUtils.checkBrokenAddressables()` (an `Addressables Check` stage) which, if that report exists, flags the build **UNSTABLE** via `setUnstable()` (Slack-notified through the existing `post { unstable }` handler). UNSTABLE does not stop the pipeline — the IPA/AAB still builds and uploads. **This stage is currently only wired into `apple.jenkinsfile`; add the same stage to the other Jenkinsfiles to enable UNSTABLE-flagging there** (the report artifact is written on all platforms regardless).
+- Do **not** rely on the Editor preference "Build Addressables on Player Build" — it's per-machine/untracked; the in-pipeline steps are what guarantee correctness on CI agents.
 
 ## GitHub Auth for Private Packages (PATs)
 

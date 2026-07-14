@@ -16,6 +16,30 @@ def setUnstable(String reason) {
 }
 
 /**
+ * Mark the build UNSTABLE if the Unity build left an Addressables broken-entry report.
+ * Pipeline.cs writes AddressablesBrokenEntries.txt into ARTIFACT_PATH only when catalog entries
+ * still had no location after a clean rebuild (warn-only — the Unity build did NOT fail). The file
+ * is archived by the pipeline's normal artifact step; here we surface a summary and flip the build to
+ * UNSTABLE. No-op when the report is absent (catalog was clean or the rebuild fixed it).
+ */
+def checkBrokenAddressables() {
+    def reportPath = "${env.ARTIFACT_PATH}/AddressablesBrokenEntries.txt"
+    if (!fileExists(reportPath)) return
+
+    def summary = 'broken catalog entries detected'
+    try {
+        // Line 2 of the report: "<n> of <m> GUID-indexed, shipped entries have no catalog location."
+        def lines = readFile(reportPath).readLines()
+        if (lines.size() > 1 && lines[1]?.trim()) summary = lines[1].trim()
+    } catch (Exception e) {
+        echo "[WARN] Could not read Addressables report: ${e.message}"
+    }
+
+    echo "[UNSTABLE] Addressables: ${summary} — see AddressablesBrokenEntries.txt (archived artifact) and the build log."
+    setUnstable("Broken Addressables — ${summary}")
+}
+
+/**
  * Fail the build with a known error — skips AI analysis and sets a custom badge.
  * Use for early failures where the cause is obvious (workspace conflict, missing env vars, tool not found).
  */

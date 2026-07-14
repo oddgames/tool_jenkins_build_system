@@ -643,6 +643,7 @@ def finalizeBuild(Map config) { ensureInitialized(); common.finalizeBuild(config
 def runFailureAnalysis(Map config) { finalizeBuild(config) }  // backwards compat
 def handleBuildAborted(Map config) { ensureInitialized(); common.handleBuildAborted(config) }
 def setUnstable(String reason) { common.setUnstable(reason) }
+def checkBrokenAddressables() { ensureInitialized(); common.checkBrokenAddressables() }
 def addBuildWarning(String warning) { common.addBuildWarning(warning) }
 
 // Ensure initialized for handlers (fallback if init() wasn't called)
