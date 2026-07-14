@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
+using UnityEditor.AddressableAssets;
+using UnityEditor.AddressableAssets.Build;
+using UnityEditor.AddressableAssets.Settings;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 #if UNITY_ANDROID
@@ -204,6 +207,13 @@ public static void Build(string outputPath, BuildOptions options)
                 // Update version data before building so it's included in the build
                 UpdateVersionData();
 
+                // Build the Addressables catalog + bundles in THIS session, before the player
+                // build, so the shipped player always carries a catalog matching current asset
+                // GUIDs. Nothing in the pipeline built content before, so builds packaged whatever
+                // catalog was last built manually — producing "No Location found for Key=<guid>"
+                // at runtime (e.g. blank preview icons). Self-skips if Addressables isn't in use.
+                BuildAddressables();
+
                 // Capture errors/exceptions logged during the build so we can replay them
                 // at the end — Unity's BuildReport often has empty error messages
                 capturedErrors.Clear();
@@ -254,6 +264,56 @@ public static void Build(string outputPath, BuildOptions options)
                 EditorApplication.Exit(exitCode);
             }
 
+        }
+
+        /// <summary>
+        /// Build the Addressables content (catalog + asset bundles) for the active build target,
+        /// in the same Editor session as the player build, right before BuildPlayer(). Ensures the
+        /// player ships a catalog that matches the current asset GUIDs instead of a stale,
+        /// manually-built one (which caused "No Location found for Key=&lt;guid&gt;" at runtime).
+        ///
+        /// Env vars:
+        ///   BUILD_ADDRESSABLES  (default "true")  — set "false" to skip the content build entirely
+        ///   CLEAN_ADDRESSABLES  (default "false") — set "true" to clean first (forces a full,
+        ///                                           slower rebuild instead of the fast incremental)
+        /// </summary>
+        private static void BuildAddressables()
+        {
+            if (!string.Equals(GetVariable("BUILD_ADDRESSABLES", "true"), "true", StringComparison.OrdinalIgnoreCase))
+            {
+                Log("BUILD_ADDRESSABLES=false — skipping Addressables content build");
+                return;
+            }
+
+            if (!AddressableAssetSettingsDefaultObject.SettingsExists)
+            {
+                Log("No AddressableAssetSettings configured — skipping content build");
+                return;
+            }
+
+            bool clean = string.Equals(GetVariable("CLEAN_ADDRESSABLES", "false"), "true", StringComparison.OrdinalIgnoreCase);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            if (clean)
+            {
+                Log("CLEAN_ADDRESSABLES=true — cleaning previous Addressables content (forces a full rebuild)");
+                AddressableAssetSettings.CleanPlayerContent();
+            }
+
+            Log($"Building Addressables content for {EditorUserBuildSettings.activeBuildTarget} ({(clean ? "clean/full" : "incremental")})...");
+
+            AddressableAssetSettings.BuildPlayerContent(out AddressablesPlayerBuildResult result);
+            sw.Stop();
+
+            // Fail the build on a content-build error — shipping a stale/broken catalog is exactly
+            // what this step exists to prevent.
+            if (result != null && !string.IsNullOrEmpty(result.Error))
+            {
+                LogError($"Addressables content build FAILED after {sw.Elapsed.TotalSeconds:F1}s: {result.Error}");
+                throw new Exception($"Addressables content build failed: {result.Error}");
+            }
+
+            Log($"✓ Addressables content build complete in {sw.Elapsed.TotalSeconds:F1}s");
         }
 
         private static void ListBuildOutput(string outputPath)

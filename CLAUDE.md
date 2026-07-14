@@ -115,6 +115,15 @@ Use **specific version IDs**, not bare prefix names:
 3. Ensure `google-services.json` exists in Unity project (`Assets/StreamingAssets/` or `Assets/Plugins/Android/`)
 4. Runs in parallel with other post-build tasks, skips silently if not configured
 
+## Addressables Content Build
+
+`Pipeline.Build()` (in `Pipeline.cs`) calls `BuildAddressables()` in the **same Editor session**, right before `BuildPipeline.BuildPlayer()`, so every player ships a catalog matching the current asset GUIDs. Before this, nothing in the pipeline built Addressables content — builds packaged whatever catalog was last built manually, producing `No Location found for Key=<guid>` at runtime (e.g. blank preview icons). All platforms funnel through `Pipeline.Build()`, so this one insertion covers Google Play/Amazon/Apple/Steam/Switch.
+
+- Calls `AddressableAssetSettings.BuildPlayerContent(out result)` directly (Addressables is always in the game projects). Skips only if no `AddressableAssetSettings` asset is configured (`SettingsExists` false).
+- **Env vars**: `BUILD_ADDRESSABLES` (default `true`, set `false` to skip); `CLEAN_ADDRESSABLES` (default `false`, set `true` to clean first → full rebuild instead of fast incremental).
+- **Fails the build** on a content-build error — shipping a stale/broken catalog is exactly what this step prevents. Reflection's `TargetInvocationException` is unwrapped so the real cause is legible.
+- Do **not** rely on the Editor preference "Build Addressables on Player Build" — it's per-machine and untracked (`m_BuildAddressablesWithPlayerBuild: 0` = `PreferencesValue`), so batchmode CI agents don't honor it. This in-pipeline step is what guarantees the rebuild.
+
 ## GitHub Auth for Private Packages (PATs)
 
 `configureGitAuth()` (in `windows.groovy`/`macos.groovy`, called from `startup()`) sets `git config --global url.insteadOf` so Unity's UPM can resolve private GitHub packages, then `cleanupGitAuth()` removes it in post.
