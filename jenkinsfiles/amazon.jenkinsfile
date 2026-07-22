@@ -368,6 +368,18 @@ pipeline {
             }
         }
 
+        stage('Addressables Check') {
+            steps {
+                script {
+                    env.CURRENT_STAGE = 'Addressables Check'
+                    // Warn-only: if the Unity build left a broken-Addressables report (catalog
+                    // entries with no location that survived a clean rebuild), flag the build
+                    // UNSTABLE. Does not stop the pipeline — the APK still builds and uploads.
+                    buildUtils.checkBrokenAddressables()
+                }
+            }
+        }
+
         stage('Log Build Outputs') {
             steps {
                 script {
