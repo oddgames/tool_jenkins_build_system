@@ -218,12 +218,11 @@ public static void Build(string outputPath, BuildOptions options)
 
                 report = RunPlayerBuild(outputPath, options);
 
-                // Verify the shipped catalog indexes every entry it should. If entries are missing,
-                // purge + rebuild once to clear a stale incremental cache. Anything still missing after
-                // a clean rebuild is surfaced (full list in the log AND an archived report file) and a
-                // marker is written so the Jenkins pipeline flags the build UNSTABLE — the player build
-                // itself is NOT failed. Returns the (possibly rebuilt) report.
-                report = ValidateCatalog(report, outputPath, options);
+                // Verify the shipped catalog indexes every entry it should. Any missing entries are
+                // surfaced (full list in the log AND an archived report file) and a marker is written
+                // so the Jenkins pipeline flags the build UNSTABLE — the player build itself is NOT
+                // failed and is NOT rebuilt. To rebuild from scratch, re-run with CLEAN_ADDRESSABLES=true.
+                ValidateCatalog(report, outputPath);
 
                 bool buildSuccess = report != null && report.summary.result == BuildResult.Succeeded;
                 exitCode = buildSuccess ? 0 : 1;
@@ -274,6 +273,9 @@ public static void Build(string outputPath, BuildOptions options)
             {
                 Log("Cleaning previous Addressables content (forces a full rebuild)");
                 AddressableAssetSettings.CleanPlayerContent();
+                // Also purge the SBP incremental cache — a stale cache is the usual cause of a catalog
+                // that omits new entries, so a forced clean must clear it too to be effective.
+                PurgeAddressablesBuildCache();
             }
 
             Log($"Building Addressables content for {EditorUserBuildSettings.activeBuildTarget} ({(clean ? "clean/full" : "incremental")})...");
@@ -291,8 +293,8 @@ public static void Build(string outputPath, BuildOptions options)
         }
 
         /// <summary>
-        /// Build the player. Extracted so the catalog validator can re-run it after a clean
-        /// Addressables rebuild. Errors logged during the build are captured for replay.
+        /// Build the player. Errors logged during the build are captured for replay (Unity's
+        /// BuildReport often has empty error messages).
         /// </summary>
         private static BuildReport RunPlayerBuild(string outputPath, BuildOptions options)
         {
@@ -335,69 +337,40 @@ public static void Build(string outputPath, BuildOptions options)
         /// <summary>
         /// Verify every shipped Addressable entry actually has a catalog location. Entries with none
         /// throw "No Location found for Key=&lt;guid&gt;" at runtime (blank preview icons, missing
-        /// content). When entries are missing, purge the incremental cache and rebuild the player once
-        /// — that auto-fixes the common stale-cache case. Anything STILL missing after a clean rebuild
-        /// is a genuinely unbuildable asset: it is surfaced (full list in the log AND an archived
-        /// report file, AddressablesBrokenEntries.txt) and the report file serves as the marker the
-        /// Jenkins pipeline uses to flag the build UNSTABLE. WARN-ONLY: the player build is never
-        /// failed here. A stale report from a prior run is deleted first so the marker reflects only
-        /// this build. Only runs on a succeeded player build that ships Addressables. Returns the
-        /// (possibly rebuilt) report.
+        /// content). Any missing entries are surfaced — the full grouped list goes to the build log AND
+        /// to an archived report file (AddressablesBrokenEntries.txt), whose existence is the marker the
+        /// Jenkins pipeline uses to flag the build UNSTABLE. WARN-ONLY: the player build is never failed
+        /// and never rebuilt here (a forced clean rebuild is opt-in via CLEAN_ADDRESSABLES=true, applied
+        /// before the build). A stale report from a prior run is deleted first so the marker reflects
+        /// only this build. Only runs on a succeeded player build that ships Addressables.
         /// </summary>
-        private static BuildReport ValidateCatalog(BuildReport playerReport, string outputPath, BuildOptions options)
+        private static void ValidateCatalog(BuildReport playerReport, string outputPath)
         {
             if (playerReport == null || playerReport.summary.result != BuildResult.Succeeded)
-                return playerReport; // build failed for other reasons — leave the normal error path to report it
+                return; // build failed for other reasons — leave the normal error path to report it
 
             // Remove any stale report so a clean build doesn't inherit a previous run's UNSTABLE marker.
             DeleteStaleBrokenReport(outputPath);
 
             if (!AddressablesEnabledForBuild())
-                return playerReport;
+                return;
 
             var missing = FindGuidsMissingFromCatalog(out int checkedCount);
             if (missing == null)
-                return playerReport; // catalog couldn't be loaded — already warned
+                return; // catalog couldn't be loaded — already warned
 
             if (missing.Count == 0)
             {
                 Log($"✓ Catalog validation passed — all {checkedCount} indexed entries present");
-                return playerReport;
+                return;
             }
 
-            // First pass found gaps. Log them (no marker yet), then purge + rebuild once in case it
-            // was only a stale incremental cache — that auto-fixes the common case.
-            ReportBrokenAddressables(missing, checkedCount, outputPath, phase: "before rebuild", writeMarker: false);
-            LogWarning($"Catalog validation found {missing.Count} of {checkedCount} entries with no catalog location. " +
-                       "Purging cache and rebuilding the player once to rule out a stale incremental cache...");
-
-            AddressableAssetSettings.CleanPlayerContent();
-            PurgeAddressablesBuildCache();
-            // When the pipeline owns the content build (setting off), rebuild it now so the re-run
-            // player build has fresh content to package. No-op when the player build owns it.
-            EnsureAddressablesContentBuilt(clean: true);
-
-            var rebuilt = RunPlayerBuild(outputPath, options);
-            if (rebuilt == null || rebuilt.summary.result != BuildResult.Succeeded)
-                return rebuilt; // the rebuild itself failed — surface via the normal error path
-            playerReport = rebuilt;
-
-            var stillMissing = FindGuidsMissingFromCatalog(out checkedCount);
-            if (stillMissing != null && stillMissing.Count > 0)
-            {
-                // Warn-only: the clean rebuild didn't fix it. Surface the full list AND write the
-                // report file (the UNSTABLE marker) — but do NOT fail the build.
-                ReportBrokenAddressables(stillMissing, checkedCount, outputPath, phase: "after clean rebuild", writeMarker: true);
-                LogWarning($"Addressables catalog is STILL missing {stillMissing.Count} of {checkedCount} entries after a clean " +
-                           "rebuild — these assets are unbuildable. Build NOT failed (warn-only); see AddressablesBrokenEntries.txt. " +
-                           "Jenkins will mark this build UNSTABLE.");
-            }
-            else
-            {
-                Log("✓ Catalog validation passed after clean rebuild");
-            }
-
-            return playerReport;
+            // Warn-only: surface the full list AND write the report file (the UNSTABLE marker). The
+            // build is NOT failed and NOT rebuilt — the report is the deliverable for a human to fix.
+            ReportBrokenAddressables(missing, checkedCount, outputPath);
+            LogWarning($"Addressables catalog is missing {missing.Count} of {checkedCount} shipped entries. " +
+                       "Build NOT failed (warn-only); see AddressablesBrokenEntries.txt. Jenkins will mark this build " +
+                       "UNSTABLE. If this is a stale incremental cache, re-run with CLEAN_ADDRESSABLES=true.");
         }
 
         /// <summary>
@@ -493,21 +466,22 @@ public static void Build(string outputPath, BuildOptions options)
         private const string BrokenReportFileName = "AddressablesBrokenEntries.txt";
 
         /// <summary>
-        /// Emit the FULL grouped list of broken Addressable entries to the build log, and — when
-        /// <paramref name="writeMarker"/> is true — also to an archived report file
-        /// (AddressablesBrokenEntries.txt). Each listed entry ships (IncludeInBuild) and is GUID-indexed
-        /// (IncludeGUIDInCatalog) yet has no catalog location — i.e. loading it via AssetReference
-        /// throws "No Location found for Key=&lt;guid&gt;" at runtime (blank icons / missing content).
-        /// Warn-level, never fatal. The report file's existence is the marker the Jenkins pipeline uses
-        /// to flag the build UNSTABLE, so it is written only on the final (post-rebuild) verdict — the
-        /// first-pass call logs but does not write the marker (the rebuild may still fix things).
+        /// Emit the FULL grouped list of broken Addressable entries to the build log AND to an archived
+        /// report file (AddressablesBrokenEntries.txt). Each listed entry ships (IncludeInBuild) and is
+        /// GUID-indexed (IncludeGUIDInCatalog) yet has no catalog location — i.e. loading it via
+        /// AssetReference throws "No Location found for Key=&lt;guid&gt;" at runtime (blank icons /
+        /// missing content). Warn-level, never fatal. The report file's existence is the marker the
+        /// Jenkins pipeline uses to flag the build UNSTABLE and to build its Slack summary, so its shape
+        /// is stable: line 2 is the count sentence, and a "PER-GROUP SUMMARY" block of "&lt;count&gt;
+        /// &lt;group&gt;" lines follows (terminated by a blank line).
         /// </summary>
-        private static void ReportBrokenAddressables(List<BrokenAddressable> broken, int checkedCount, string outputPath, string phase, bool writeMarker)
+        private static void ReportBrokenAddressables(List<BrokenAddressable> broken, int checkedCount, string outputPath)
         {
             var byGroup = broken.GroupBy(b => b.Group).OrderByDescending(g => g.Count()).ToList();
+            string countSentence = $"{broken.Count} of {checkedCount} shipped, GUID-indexed Addressable entries have no catalog location.";
 
-            LogWarning($"========== ADDRESSABLES: {broken.Count} BROKEN ENTRIES ({phase}) ==========");
-            LogWarning($"{broken.Count} of {checkedCount} GUID-indexed, shipped entries have NO catalog location.");
+            LogWarning($"========== ADDRESSABLES: {broken.Count} BROKEN ENTRIES ==========");
+            LogWarning(countSentence);
             LogWarning("They will fail at runtime with \"No Location found for Key=<guid>\" (blank icons / missing content).");
             LogWarning("Broken entries per group:");
             foreach (var g in byGroup)
@@ -518,43 +492,50 @@ public static void Build(string outputPath, BuildOptions options)
             {
                 LogWarning($"--- {g.Key}  ({g.Count()}) ---");
                 foreach (var b in g.OrderBy(x => x.Address, StringComparer.Ordinal))
-                    LogWarning($"  {b.Guid}  {b.Address}");
+                    LogWarning($"  {b.Address}   [{b.AssetPath}]   {b.Guid}");
             }
 
-            // File: the same complete grouped list — only written as the UNSTABLE marker on the final
-            // verdict, so a first-pass gap that the rebuild fixes does not leave the build UNSTABLE.
-            if (writeMarker)
+            try
             {
-                try
+                string reportPath = GetBrokenReportPath(outputPath);
+                if (reportPath != null)
                 {
-                    string reportPath = GetBrokenReportPath(outputPath);
-                    if (reportPath != null)
+                    var sb = new System.Text.StringBuilder();
+                    // Line 1 = title, line 2 = count sentence (the pipeline reads line 2 verbatim).
+                    sb.AppendLine("ADDRESSABLES BROKEN-ENTRY REPORT");
+                    sb.AppendLine(countSentence);
+                    sb.AppendLine();
+                    sb.AppendLine("These entries fail to load at runtime (\"No Location found for Key=<guid>\") — blank preview");
+                    sb.AppendLine("icons / missing content. The player build was NOT failed; the build is flagged UNSTABLE so");
+                    sb.AppendLine("this is fixed before shipping. To rule out a stale cache, re-run with CLEAN_ADDRESSABLES=true.");
+                    sb.AppendLine();
+                    sb.AppendLine("PER-GROUP SUMMARY");
+                    foreach (var g in byGroup)
+                        sb.AppendLine($"  {g.Count(),6}  {g.Key}");
+                    sb.AppendLine();
+                    sb.AppendLine("DETAIL  (each entry: address / asset path / guid)");
+                    foreach (var g in byGroup)
                     {
-                        var sb = new System.Text.StringBuilder();
-                        sb.AppendLine("Addressables broken-entry report");
-                        sb.AppendLine($"{broken.Count} of {checkedCount} GUID-indexed, shipped entries have no catalog location.");
-                        sb.AppendLine("Each throws \"No Location found for Key=<guid>\" when loaded via AssetReference at runtime.");
-                        sb.AppendLine("Columns: <guid>\\t<address>");
-                        sb.AppendLine();
-                        foreach (var g in byGroup)
+                        sb.AppendLine($"=== {g.Key}  ({g.Count()}) ===");
+                        foreach (var b in g.OrderBy(x => x.Address, StringComparer.Ordinal))
                         {
-                            sb.AppendLine($"=== {g.Key}  ({g.Count()}) ===");
-                            foreach (var b in g.OrderBy(x => x.Address, StringComparer.Ordinal))
-                                sb.AppendLine($"{b.Guid}\t{b.Address}");
-                            sb.AppendLine();
+                            sb.AppendLine($"  {b.Address}");
+                            sb.AppendLine($"      asset: {b.AssetPath}");
+                            sb.AppendLine($"      guid : {b.Guid}");
                         }
-                        File.WriteAllText(reportPath, sb.ToString());
-                        LogWarning($"Full broken-entry list written to: {reportPath}");
+                        sb.AppendLine();
                     }
-                    else
-                    {
-                        LogWarning("No writable directory found — report file not written (the full list above is complete).");
-                    }
+                    File.WriteAllText(reportPath, sb.ToString());
+                    LogWarning($"Full broken-entry report written to: {reportPath}");
                 }
-                catch (Exception ex)
+                else
                 {
-                    LogWarning($"Could not write broken-entry report file: {ex.Message}");
+                    LogWarning("No writable directory found — report file not written (the full list above is complete).");
                 }
+            }
+            catch (Exception ex)
+            {
+                LogWarning($"Could not write broken-entry report file: {ex.Message}");
             }
 
             LogWarning("======================================================");

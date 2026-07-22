@@ -27,13 +27,37 @@ def checkBrokenAddressables() {
     if (!fileExists(reportPath)) return
 
     def summary = 'broken catalog entries detected'
+    def perGroup = []
     try {
-        // Line 2 of the report: "<n> of <m> GUID-indexed, shipped entries have no catalog location."
         def lines = readFile(reportPath).readLines()
+        // Line 2 of the report is the count sentence (stable contract with Pipeline.cs).
         if (lines.size() > 1 && lines[1]?.trim()) summary = lines[1].trim()
+        // The "PER-GROUP SUMMARY" block lists "<count>  <group>" until the next blank line.
+        def inSummary = false
+        for (def line : lines) {
+            if (line ==~ /(?i)\s*PER-GROUP SUMMARY\s*/) { inSummary = true; continue }
+            if (inSummary) {
+                if (!line?.trim()) break
+                perGroup << line.trim()
+            }
+        }
     } catch (Exception e) {
         echo "[WARN] Could not read Addressables report: ${e.message}"
     }
+
+    // Compose the Slack detail block: summary + per-group breakdown + a link to the archived report,
+    // so the full list is one click away. Rendered by sendSlackBuildNotification() on unstable builds.
+    def reportUrl = "${env.BUILD_URL}artifact/artifacts/AddressablesBrokenEntries.txt"
+    def detail = ":jigsaw: *Broken Addressables* — ${summary}\n"
+    detail += "Each fails at runtime with `No Location found for Key=<guid>` (blank icons / missing content).\n"
+    if (perGroup) {
+        def shown = perGroup.take(12)
+        detail += "*Broken entries per group:*\n```${shown.join('\n')}"
+        if (perGroup.size() > shown.size()) detail += "\n… and ${perGroup.size() - shown.size()} more group(s)"
+        detail += "```\n"
+    }
+    detail += "<${reportUrl}|:page_facing_up: Full broken-entry report>"
+    env.ADDRESSABLES_REPORT_DETAIL = detail
 
     echo "[UNSTABLE] Addressables: ${summary} — see AddressablesBrokenEntries.txt (archived artifact) and the build log."
     setUnstable("Broken Addressables — ${summary}")
@@ -824,6 +848,13 @@ def sendSlackBuildNotification(Map config) {
         [type: 'context', elements: headerElements],
         [type: 'section', text: [type: 'mrkdwn', text: message]]
     ]
+
+    // Broken-Addressables detail (per-group breakdown + link to the archived report), populated by
+    // checkBrokenAddressables() when the catalog shipped entries with no location.
+    if (env.ADDRESSABLES_REPORT_DETAIL && (status == 'unstable' || status == 'failure')) {
+        blocks << [type: 'divider']
+        blocks << [type: 'section', text: [type: 'mrkdwn', text: env.ADDRESSABLES_REPORT_DETAIL.take(2900)]]
+    }
 
     if (changeHistory) {
         blocks << [type: 'context', elements: [[type: 'mrkdwn', text: "${changeHistory}"]]]
