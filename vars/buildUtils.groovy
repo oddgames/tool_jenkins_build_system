@@ -104,6 +104,31 @@ private def _workspaceName(String jobName) {
 }
 
 /**
+ * Resolve the full name of the JOB that owns a Queue.Task, walking Queue.SubTask.getOwnerTask() up
+ * to the real owner. This is essential for pipeline builds: the executor/queue task is a
+ * PlaceholderTask (from the durable-task `node` step) which has NO getFullName() — calling it throws
+ * and the conflict check silently records the job as unknown, so a concurrent build lands on the
+ * busy same-job node and gets an @2 workspace. PlaceholderTask.getOwnerTask() returns the actual
+ * WorkflowJob; a freestyle build's task is already the job (getOwnerTask() returns itself). Returns
+ * null if it can't be resolved (e.g. task type without getFullName()) — caller treats that as unknown.
+ */
+@NonCPS
+private def _ownerJobName(def task) {
+    try {
+        int hops = 0
+        while (task != null && hops < 10) {
+            def owner = task.getOwnerTask()
+            if (owner == null || owner.is(task)) break
+            task = owner
+            hops++
+        }
+        return task?.getFullName()
+    } catch (Exception e) {
+        return null
+    }
+}
+
+/**
  * Find the node that most recently built this job on the given branch, by scanning previous
  * builds' descriptions (set by updateBranchDescription() as "<branch> @<node>"). Used to
  * soft-prefer the agent that already holds this branch's warm per-branch cache.
@@ -201,7 +226,9 @@ private def _queryNodes(String label, String currentJob, String branch = null) {
                 }
                 try {
                     def executable = executor.getCurrentExecutable()
-                    def jobName = executable?.getParent()?.getFullName() ?: 'unknown'
+                    // executable.getParent() is the Queue.Task (a PlaceholderTask for pipelines);
+                    // resolve its owning job via getOwnerTask() — a bare getFullName() would throw.
+                    def jobName = _ownerJobName(executable?.getParent()) ?: 'unknown'
                     runningJobs << jobName
                     if (_workspaceName(jobName) == currentWsName) {
                         hasWorkspaceConflict = true
@@ -289,12 +316,15 @@ private def _getQueuedJobsPerNode(def jenkins) {
     try {
         def queue = jenkins.getQueue()
         for (def item : queue.getItems()) {
-            def jobName = item.task?.getFullName() ?: null
-            if (!jobName) continue
-
-            // Try to determine which node this queued item targets
-            def nodeName = null
+            // Per-item try/catch so one unresolvable item can't discard the whole queue map.
             try {
+                // item.task is a Queue.Task — a PlaceholderTask for a queued pipeline node block,
+                // whose getFullName() throws; resolve the owning job via getOwnerTask().
+                def jobName = _ownerJobName(item.task)
+                if (!jobName) continue
+
+                // Try to determine which node this queued item targets
+                def nodeName = null
                 def assignedLabel = item.getAssignedLabel()
                 if (assignedLabel) {
                     // If the label matches a specific node name, use it directly
@@ -303,13 +333,13 @@ private def _getQueuedJobsPerNode(def jenkins) {
                         nodeName = labelNodes[0].displayName
                     }
                 }
-            } catch (Exception e) {
-                // Ignore — can't determine target node for this queued item
-            }
 
-            if (nodeName) {
-                if (!queuedPerNode[nodeName]) queuedPerNode[nodeName] = []
-                queuedPerNode[nodeName] << jobName
+                if (nodeName) {
+                    if (!queuedPerNode[nodeName]) queuedPerNode[nodeName] = []
+                    queuedPerNode[nodeName] << jobName
+                }
+            } catch (Exception e) {
+                // Ignore — can't resolve this queued item; other items still counted
             }
         }
     } catch (Exception e) {

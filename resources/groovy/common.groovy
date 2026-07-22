@@ -514,6 +514,24 @@ private def _testAllPermissions(currentBuildWrapper) {
             }
         }
     }
+    // pickNode resolves the owning job of a pipeline's PlaceholderTask via getOwnerTask() (it has no
+    // getFullName()). Queue this signature so conflict detection isn't sent to the fallback path.
+    testPermission('SubTask.getOwnerTask') {
+        if (testComputer) {
+            def executors = testComputer.getExecutors()
+            for (def executor : executors) {
+                def executable = executor.getCurrentExecutable()
+                if (executable) {
+                    def task = executable.getParent()
+                    if (task) {
+                        def owner = task.getOwnerTask()
+                        if (owner) owner.getFullName()
+                    }
+                }
+                break
+            }
+        }
+    }
 
     // --- Queue API (for detecting queued builds in pickNode) ---
     testPermission('Jenkins.getQueue') {

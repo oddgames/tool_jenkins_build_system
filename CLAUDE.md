@@ -76,7 +76,7 @@ The **build pipeline still checks out the Unity game projects from Plastic SCM**
 - Windows 260-char path limit — Steam uses `C:\Temp\Steam\` staging to work around this
 - Script approvals are verified at build time by `preflightJenkinsPermissions()` in `common.groovy`
 - **When adding sandbox-restricted API calls** (anything under `jenkins.model.*`, `hudson.*`, `org.jenkinsci.*`, `rawBuild.*`, `classLoader.*`, `.newInstance()`), **add a matching `testPermission()` block** to `preflightJenkinsPermissions()`. Each permission MUST have its own try/catch so all pending signatures are queued at once in Jenkins' Script Approval page.
-- Node selection API (`pickNode()`) requires: `Jenkins.get`, `getLabel`, `getLabels`, `Node.toComputer`, `Node.getDisplayName`, `LabelAtom.getNodes`, `Computer.isOnline`, `Computer.numExecutors`, `Computer.getExecutors`, `Executor.isBusy`, `Executor.getCurrentExecutable`, `Run.getParent`, `Job.getFullName`, `Jenkins.getQueue`, `Queue.getItems`, `Queue.Item.getAssignedLabel`, `Queue.Item.task`
+- Node selection API (`pickNode()`) requires: `Jenkins.get`, `getLabel`, `getLabels`, `Node.toComputer`, `Node.getDisplayName`, `LabelAtom.getNodes`, `Computer.isOnline`, `Computer.numExecutors`, `Computer.getExecutors`, `Executor.isBusy`, `Executor.getCurrentExecutable`, `Run.getParent`, `Queue.Task.getOwnerTask` (resolves a pipeline's PlaceholderTask to its owning job — plain `getFullName()` on the executor task throws for pipelines, which was silently disabling conflict detection and causing `@2` workspaces), `Job.getFullName`, `Jenkins.getQueue`, `Queue.getItems`, `Queue.Item.getAssignedLabel`, `Queue.Item.task`
 
 ### Sandbox Restrictions
 
