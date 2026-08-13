@@ -20,6 +20,8 @@ resources/
     PipelineApple.cs         # iOS: Xcode post-build, plist, capabilities
     PipelineSteam.cs         # Windows: IL2CPP standalone build
     PipelineSwitch.cs        # Nintendo Switch build
+    PipelineXbox.cs          # Xbox GDK/GameCore build (Series X|S and Xbox One)
+    PipelinePS5.cs           # PlayStation 5 build
     PipelineArtifactCopy.cs  # Copy build outputs to artifact directory
   scripts/
     play_upload.rb           # Google Play AAB upload (JWT auth, resumable, symbol upload)
@@ -30,6 +32,8 @@ jenkinsfiles/                # Declarative pipelines per platform
   amazon.jenkinsfile         # Android → Amazon Appstore (APK via catalog API)
   apple.jenkinsfile          # iOS → App Store (TestFlight via Fastlane)
   switch.jenkinsfile         # Nintendo Switch → Google Drive (manual portal upload)
+  xbox.jenkinsfile           # Xbox GameCore → Google Drive (manual Partner Center upload)
+  ps5.jenkinsfile            # PlayStation 5 → Google Drive (manual PS Partners upload)
   test_editor.jenkinsfile    # EditMode/PlayMode tests across platforms
 ```
 
@@ -108,6 +112,38 @@ Use **specific version IDs**, not bare prefix names:
 - **Switch NSP not building**: `BuildOptions.CompressWithLz4HC` conflicts with Switch ROM creation — removed from `PipelineSwitch.cs`. Switch uses its own compression via `switchEnableRomCompression`/`switchRomCompressionType`
 - **Steam Linux building Windows exe**: Missing `linux-il2cpp` module causes Unity to silently fall back to Windows — added `validateLinuxBuildSupport()` preflight to `steam-linux.jenkinsfile`
 - **Steam "Failed to commit build ... : Failure"**: the `SetLive` branch in the VDF must already exist on the app. The content upload succeeds and Steam still creates the build — only the commit RPC is rejected — so the build shows up in Steamworks while the pipeline reports failure. See below.
+
+## Console Platforms (Xbox / PS5)
+
+Both follow the Switch pattern: build on a Windows agent, deliver the output to Google Drive + the
+local share, submit manually through the platform portal. No automated store upload.
+
+- **`env.PLATFORM` is the Unity `-buildTarget`**: `GameCoreXboxSeries`, `GameCoreXboxOne`, `PS5`.
+  The Xbox job picks its target with the `XBOX_TARGET` parameter.
+- **Modules are not in Unity Hub.** Licensed console support is installed from the platform's own
+  developer portal, so there is no module ID to auto-install. `validateXboxSupport()` /
+  `validatePS5Support()` probe the `PlaybackEngines` folder instead and list every path they tried
+  when it's missing.
+- **SDK discovery**: `preflightXboxGDK()` resolves the GDK from `GameDK`/`GXDKLatest`, falling back
+  to scanning `C:/Program Files (x86)/Microsoft GDK`; `preflightPS5SDK()` resolves
+  `SCE_PROSPERO_SDK_DIR` from the SCE env vars or `C:/Program Files (x86)/SCE/Prospero SDKs`. Both
+  fall back because an agent service started before the SDK install won't have inherited the
+  machine env vars — **restart the agent service after installing an SDK**. `runUnityCommand()`
+  fails fast if the matching preflight didn't run.
+- **Output is a folder**, not a single installable file, so the jobs call
+  `uploadFolderToGoogleDrive()` (uploads the whole tree, links the folder, plus a direct link if a
+  `.xvc`/`.msixvc`/`.pkg` is present at the top level) rather than `uploadToGoogleDrive()`.
+- **No packaging step.** The pipelines ship the loose layout; makepkg (Xbox) and the PS5 publishing
+  tools are still manual. `preflightXboxGDK()` logs the makepkg path when it finds one.
+- **No `CompressWithLz4HC`** on either console — same conflict with platform packaging that broke
+  Switch ROM creation.
+- **Platform-specific player settings** that need the module's own editor API (which we can't
+  reference without breaking compilation on agents that lack the module) belong in a Build Profile
+  at `Assets/Editor/Pipeline/BuildProfiles/{Xbox,PS5}{Debug,Release}.buildprofile`. The C# scripts
+  activate it when present and fall back to scripted IL2CPP/stripping settings when not, resolving
+  the `NamedBuildTarget` from the active target group at runtime.
+- Optional job env vars `XBOX_AGENT_LABEL` / `PS5_AGENT_LABEL` restrict the job to SDK-equipped
+  agents (default label: `Windows`).
 
 ## Steam SetLive Branches
 

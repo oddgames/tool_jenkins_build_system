@@ -1330,6 +1330,13 @@ def getRequiredUnityModules(String platform) {
             return ['linux-il2cpp']
         case 'Switch':
             return ['nintendo-switch']
+        case 'GameCoreXboxSeries':
+        case 'GameCoreXboxOne':
+        case 'PS5':
+            // Licensed console modules are not distributed through Unity Hub, so there is no
+            // module ID to install. Presence is verified against the PlaybackEngines folder by
+            // validateXboxSupport() / validatePS5Support() instead.
+            return []
         default:
             return []
     }
@@ -4009,7 +4016,10 @@ def validateUnityInstallation() {
             'iOS': 'iOSSupport',
             'StandaloneWindows64': 'WindowsStandaloneSupport',
             'StandaloneLinux64': 'LinuxStandaloneSupport',
-            'Switch': 'Switch'
+            'Switch': 'Switch',
+            'GameCoreXboxSeries': 'GameCoreXboxSeries',
+            'GameCoreXboxOne': 'GameCoreXboxOne',
+            'PS5': 'PS5'
         ]
         def platformDir = platformDirs[env.PLATFORM]
         if (platformDir) {
@@ -4051,8 +4061,8 @@ def validateUnityInstallation() {
     }
 
     // Verify IL2CPP support for platforms that require it
-    // Switch always uses IL2CPP; all other platforms use IL2CPP for Release builds
-    def il2cppAlways = ['Switch']
+    // Consoles are IL2CPP-only; all other platforms use IL2CPP for Release builds
+    def il2cppAlways = ['Switch', 'GameCoreXboxSeries', 'GameCoreXboxOne', 'PS5']
     def il2cppRelease = ['Android', 'Amazon']
     def needsIl2cpp = (env.PLATFORM in il2cppAlways) ||
                       (env.PLATFORM in il2cppRelease && env.BUILD_TYPE != 'Debug')
@@ -4099,7 +4109,10 @@ def verifyIl2cppSupport(String playbackEngines) {
         'StandaloneLinux64': "${playbackEngines}\\LinuxStandaloneSupport\\il2cpp",
         'Android': "${playbackEngines}\\AndroidPlayer\\il2cpp",
         'Amazon': "${playbackEngines}\\AndroidPlayer\\il2cpp",
-        'Switch': "${playbackEngines}\\Switch\\il2cpp"
+        'Switch': "${playbackEngines}\\Switch\\il2cpp",
+        'GameCoreXboxSeries': "${playbackEngines}\\GameCoreXboxSeries\\il2cpp",
+        'GameCoreXboxOne': "${playbackEngines}\\GameCoreXboxOne\\il2cpp",
+        'PS5': "${playbackEngines}\\PS5\\il2cpp"
     ]
     def platformIl2cpp = platformIl2cppDirs[env.PLATFORM]
     if (platformIl2cpp) {
@@ -4324,6 +4337,206 @@ def validateNintendoSwitchSupport() {
     }
 
     echo "[OK] Nintendo Switch module verified"
+}
+
+/**
+ * Verify a licensed console playback engine is installed for the active Unity version.
+ *
+ * Console modules (Xbox/GameCore, PS5) are not distributed through Unity Hub, so there is no
+ * module ID to query or auto-install — the only reliable signal is the platform folder inside
+ * PlaybackEngines. Folder naming has changed across Unity versions and SDK generations, so each
+ * caller passes the names it accepts and the error lists every path that was probed.
+ *
+ * Sets env.CONSOLE_PLAYBACK_ENGINE to the folder that matched.
+ */
+private def validateConsolePlaybackEngine(String label, List candidates, String fixText) {
+    echo "[INFO] Verifying ${label} module installation..."
+    def playbackEngines = getPlaybackEnginesPath(env.UNITY_VERSION)
+
+    def found = null
+    candidates.each { name ->
+        if (!found) {
+            def path = "${playbackEngines}\\${name}"
+            def exists = bat(script: "@if exist \"${path}\" echo found", returnStdout: true).trim()
+            if (exists == 'found') found = path
+        }
+    }
+
+    if (!found) {
+        def probed = candidates.collect { "  - ${playbackEngines}\\${it}" }.join('\n')
+        error "[ERROR] ${label} build support is not installed for Unity ${env.UNITY_VERSION}\n" +
+              "Without it Unity cannot build this target (and may silently fall back to another platform).\n" +
+              "Probed:\n${probed}\n\n" +
+              "[FIX] ${fixText}"
+    }
+
+    env.CONSOLE_PLAYBACK_ENGINE = found
+    echo "[OK] ${label} playback engine: ${found}"
+}
+
+def validateXboxSupport() {
+    // GameCoreXboxSeries (Xbox Series X|S) and GameCoreXboxOne (Xbox One, GDK) install as separate
+    // playback engines — validate the one this job is actually building.
+    def target = env.PLATFORM ?: 'GameCoreXboxSeries'
+    def candidates = (target == 'GameCoreXboxOne')
+        ? ['GameCoreXboxOne', 'XboxOne']
+        : ['GameCoreXboxSeries', 'GameCoreScarlett']
+    validateConsolePlaybackEngine(
+        "Xbox (${target})",
+        candidates,
+        "Install Unity ${env.UNITY_VERSION} ${target} build support from the Xbox developer portal " +
+        "(Unity console downloads are distributed there, not through Unity Hub), then retry this build."
+    )
+}
+
+def validatePS5Support() {
+    validateConsolePlaybackEngine(
+        'PlayStation 5',
+        ['PS5', 'PS5Player', 'PlayStation5'],
+        "Install Unity ${env.UNITY_VERSION} PS5 build support from the PlayStation Partners developer " +
+        "portal (Unity console downloads are distributed there, not through Unity Hub), then retry this build."
+    )
+}
+
+/**
+ * Locate the Microsoft GDK and export its roots for the Unity build.
+ *
+ * The GDK installer sets GameDK / GameDKLatest / GRDKLatest / GXDKLatest as machine environment
+ * variables, but a Jenkins agent service started before the install won't see them, so this also
+ * falls back to scanning the default install root. GXDK (the console GDK) is what GameCore player
+ * builds need; GRDK alone (PC GDK) is not enough.
+ */
+def preflightXboxGDK() {
+    def result = bat(
+        script: '''
+            @echo off
+            setlocal enabledelayedexpansion
+
+            set "GDK_BASE="
+            if defined GameDK set "GDK_BASE=%GameDK%"
+            if not defined GDK_BASE if exist "C:\\Program Files (x86)\\Microsoft GDK" set "GDK_BASE=C:\\Program Files (x86)\\Microsoft GDK"
+
+            set "GXDK_DIR="
+            if defined GXDKLatest if exist "%GXDKLatest%" set "GXDK_DIR=%GXDKLatest%"
+
+            REM Fall back to the last (highest-numbered) version folder that contains a GXDK.
+            REM Every failure path exits 0 and reports through stdout: with returnStdout a non-zero
+            REM exit throws and Jenkins discards the captured output, hiding the diagnostics.
+            if not defined GXDK_DIR (
+                if not defined GDK_BASE (
+                    echo [ERROR] Microsoft GDK not found: GameDK is not set and the default install root is missing
+                    goto :eof
+                )
+                for /d %%D in ("%GDK_BASE%\\*") do (
+                    if exist "%%D\\GXDK" set "GXDK_DIR=%%D\\GXDK"
+                )
+            )
+
+            if not defined GXDK_DIR (
+                echo [ERROR] No GXDK found under %GDK_BASE%
+                echo [INFO] Installed GDK versions:
+                for /d %%D in ("%GDK_BASE%\\*") do echo   - %%~nxD
+                goto :eof
+            )
+
+            REM Strip any trailing backslash so downstream path joins stay clean
+            if "!GXDK_DIR:~-1!"=="\\" set "GXDK_DIR=!GXDK_DIR:~0,-1!"
+
+            if defined GDK_BASE echo GAMEDK_ROOT=!GDK_BASE!
+            echo GXDK_ROOT=!GXDK_DIR!
+
+            if exist "!GXDK_DIR!\\bin\\makepkg.exe" (
+                echo MAKEPKG_PATH=!GXDK_DIR!\\bin\\makepkg.exe
+            ) else (
+                echo [INFO] makepkg.exe not found under !GXDK_DIR!\\bin - packaging tools unavailable on this agent
+            )
+        ''',
+        returnStdout: true
+    ).trim()
+
+    def gxdkMatch = result =~ /GXDK_ROOT=(.+)/
+    if (!gxdkMatch) {
+        error "${result}\n\n[FIX] Install the Microsoft GDK (with Xbox console support) on this agent, " +
+              "then restart the Jenkins agent service so it picks up the GDK environment variables."
+    }
+    env.GXDK_ROOT = gxdkMatch[0][1].trim()
+    // Re-export in the form the GDK tooling expects (installer sets it with a trailing separator).
+    // Derived from GXDKLatest when the agent already had it, so this never picks a different SDK.
+    env.GXDKLatest = "${env.GXDK_ROOT}\\"
+    echo "[OK] Microsoft GDK (GXDK): ${env.GXDK_ROOT}"
+
+    def baseMatch = result =~ /GAMEDK_ROOT=(.+)/
+    if (baseMatch) {
+        env.GameDK = baseMatch[0][1].trim()
+        echo "[OK] GDK root: ${env.GameDK}"
+    }
+
+    def makepkgMatch = result =~ /MAKEPKG_PATH=(.+)/
+    if (makepkgMatch) {
+        env.MAKEPKG_PATH = makepkgMatch[0][1].trim()
+        echo "[INFO] makepkg available: ${env.MAKEPKG_PATH} (packaging is not run by this pipeline)"
+    }
+}
+
+/**
+ * Locate the PS5 (Prospero) SDK and export its roots for the Unity build.
+ *
+ * The SDK installer sets SCE_ROOT_DIR and SCE_PROSPERO_SDK_DIR; as with the GDK, an agent service
+ * started before the install won't see them, so the default install root is scanned as a fallback.
+ */
+def preflightPS5SDK() {
+    def result = bat(
+        script: '''
+            @echo off
+            setlocal enabledelayedexpansion
+
+            set "SCE_BASE="
+            if defined SCE_ROOT_DIR set "SCE_BASE=%SCE_ROOT_DIR%"
+            if not defined SCE_BASE if exist "C:\\Program Files (x86)\\SCE" set "SCE_BASE=C:\\Program Files (x86)\\SCE"
+
+            set "PROSPERO_DIR="
+            if defined SCE_PROSPERO_SDK_DIR if exist "%SCE_PROSPERO_SDK_DIR%" set "PROSPERO_DIR=%SCE_PROSPERO_SDK_DIR%"
+
+            REM Fall back to the last (highest-numbered) installed Prospero SDK. As above, failure
+            REM paths exit 0 and report through stdout so the diagnostics survive returnStdout.
+            if not defined PROSPERO_DIR (
+                if not defined SCE_BASE (
+                    echo [ERROR] PS5 SDK not found: SCE_ROOT_DIR is not set and the default install root is missing
+                    goto :eof
+                )
+                for /d %%D in ("%SCE_BASE%\\Prospero SDKs\\*") do (
+                    set "PROSPERO_DIR=%%D"
+                )
+            )
+
+            if not defined PROSPERO_DIR (
+                echo [ERROR] No Prospero SDK found under %SCE_BASE%
+                echo [INFO] Contents of %SCE_BASE%:
+                for /d %%D in ("%SCE_BASE%\\*") do echo   - %%~nxD
+                goto :eof
+            )
+
+            if "!PROSPERO_DIR:~-1!"=="\\" set "PROSPERO_DIR=!PROSPERO_DIR:~0,-1!"
+
+            if defined SCE_BASE echo SCE_ROOT=!SCE_BASE!
+            echo PROSPERO_SDK=!PROSPERO_DIR!
+        ''',
+        returnStdout: true
+    ).trim()
+
+    def sdkMatch = result =~ /PROSPERO_SDK=(.+)/
+    if (!sdkMatch) {
+        error "${result}\n\n[FIX] Install the PS5 (Prospero) SDK on this agent, then restart the Jenkins " +
+              "agent service so it picks up the SCE environment variables."
+    }
+    env.SCE_PROSPERO_SDK_DIR = sdkMatch[0][1].trim()
+    echo "[OK] PS5 SDK: ${env.SCE_PROSPERO_SDK_DIR}"
+
+    def rootMatch = result =~ /SCE_ROOT=(.+)/
+    if (rootMatch) {
+        env.SCE_ROOT_DIR = rootMatch[0][1].trim()
+        echo "[OK] SCE root: ${env.SCE_ROOT_DIR}"
+    }
 }
 
 /**
@@ -4774,6 +4987,31 @@ def runUnityCommand(Map config) {
         """
     }
 
+    // Xbox (GameCore) and PS5 need their SDK roots in the build environment. preflightXboxGDK() /
+    // preflightPS5SDK() set them on env so they're already inherited here — this block fails fast
+    // with a pointed message if the preflight stage was skipped, rather than letting Unity fall
+    // over deep inside IL2CPP with an unrelated error.
+    def consoleEnv = ''
+    if (platform in ['GameCoreXboxSeries', 'GameCoreXboxOne']) {
+        consoleEnv = """
+            if not defined GXDKLatest (
+                echo [ERROR] GXDKLatest not set. Run preflightXboxGDK first.
+                exit /b 1
+            )
+            echo [INFO] GXDKLatest=%GXDKLatest%
+            if defined GameDK echo [INFO] GameDK=%GameDK%
+        """
+    } else if (platform == 'PS5') {
+        consoleEnv = """
+            if not defined SCE_PROSPERO_SDK_DIR (
+                echo [ERROR] SCE_PROSPERO_SDK_DIR not set. Run preflightPS5SDK first.
+                exit /b 1
+            )
+            echo [INFO] SCE_PROSPERO_SDK_DIR=%SCE_PROSPERO_SDK_DIR%
+            if defined SCE_ROOT_DIR echo [INFO] SCE_ROOT_DIR=%SCE_ROOT_DIR%
+        """
+    }
+
     def cacheServerFlags = env.CACHE_SERVER_ENDPOINT ? "-EnableCacheServer -cacheServerEndpoint ${env.CACHE_SERVER_ENDPOINT}" : ''
 
     // CPU affinity mask limits cores visible to Unity/bee_backend, reducing parallel IL2CPP
@@ -4800,6 +5038,7 @@ def runUnityCommand(Map config) {
         @echo off
         ${prepareDirs}
         ${nintendoEnv}
+        ${consoleEnv}
         echo [INFO] Running Unity: ${executeMethod}
         echo [INFO] Unity path: ${unityExePath}
         ${affinitySetter}
@@ -5794,6 +6033,38 @@ def ensureBundletool() {
 // UPLOAD FUNCTIONS
 // ============================================================================
 
+/**
+ * Run `rclone link`, retrying once after 5s if Google Drive hasn't indexed the upload yet.
+ * Uses a temp file instead of for/f echo so & in the URL isn't parsed as a command separator.
+ */
+private def _rcloneLink(String rclonePath, String remotePath) {
+    def extractLink = { String raw ->
+        if (!raw) return ''
+        // Find the HTTP URL line (rclone may also output stats/warnings)
+        def httpLine = raw.split('\r?\n').find { it.trim().startsWith('http') }?.trim()
+        return httpLine ?: ''
+    }
+    def runLink = {
+        bat(script: """@echo off
+set LINK_TMP=%TEMP%\\rclone_link_%RANDOM%.txt
+"${rclonePath}" --config "%RCLONE_CONFIG%" link "%RCLONE_REMOTE%/${remotePath}" > "%LINK_TMP%" 2>&1
+type "%LINK_TMP%"
+del "%LINK_TMP%"
+exit /b 0""", returnStdout: true).trim()
+    }
+    def raw = runLink()
+    def link = extractLink(raw)
+    if (!link) {
+        if (raw) echo "[WARN] rclone link output (no URL found):\n${raw.take(500)}"
+        echo "[INFO] rclone link retry in 5s for: ${remotePath}"
+        sleep(5)
+        raw = runLink()
+        link = extractLink(raw)
+        if (!link) echo "[WARN] rclone link retry failed for: ${remotePath}\nOutput: ${raw.take(500)}"
+    }
+    return link
+}
+
 def uploadToGoogleDrive(Map config) {
     def buildPath = config.buildPath
     def destFolder = config.destFolder
@@ -5860,35 +6131,7 @@ for %%f in (*.apk *.aab *.ipa *.nsp) do (
     echo %%f
     goto :eof
 )""", returnStdout: true).trim()
-    // Helper: run rclone link, retry once after 5s if Google Drive hasn't indexed yet
-    // Uses a temp file instead of for/f echo to avoid & being parsed as a command separator in URLs
-    def rcloneLink = { String remotePath ->
-        def extractLink = { String raw ->
-            if (!raw) return ''
-            // Find the HTTP URL line (rclone may also output stats/warnings)
-            def httpLine = raw.split('\r?\n').find { it.trim().startsWith('http') }?.trim()
-            return httpLine ?: ''
-        }
-        def runLink = {
-            bat(script: """@echo off
-set LINK_TMP=%TEMP%\\rclone_link_%RANDOM%.txt
-"${rclonePath}" --config "%RCLONE_CONFIG%" link "%RCLONE_REMOTE%/${remotePath}" > "%LINK_TMP%" 2>&1
-type "%LINK_TMP%"
-del "%LINK_TMP%"
-exit /b 0""", returnStdout: true).trim()
-        }
-        def raw = runLink()
-        def link = extractLink(raw)
-        if (!link) {
-            if (raw) echo "[WARN] rclone link output (no URL found):\n${raw.take(500)}"
-            echo "[INFO] rclone link retry in 5s for: ${remotePath}"
-            sleep(5)
-            raw = runLink()
-            link = extractLink(raw)
-            if (!link) echo "[WARN] rclone link retry failed for: ${remotePath}\nOutput: ${raw.take(500)}"
-        }
-        return link
-    }
+    def rcloneLink = { String remotePath -> _rcloneLink(rclonePath, remotePath) }
 
     def fileLink = ""
     if (fileName) {
@@ -5934,6 +6177,100 @@ exit /b 0""", returnStdout: true).trim()
     common.updateUploadStatus('gdrive', 'done')
 
     return [folderLink: gdriveFolderLink, fileLink: fileLink, fileName: fileName]
+}
+
+/**
+ * Upload an entire build output directory to Google Drive.
+ *
+ * Console builds (Xbox GameCore, PS5) ship a folder layout, not a single installable file, so
+ * uploadToGoogleDrive()'s "find the one artifact and upload it" path doesn't apply. This copies
+ * the whole tree and links the folder; if a submission package is sitting at the top level
+ * (.xvc/.msixvc for Xbox, .pkg for PS5) it gets a direct download link too.
+ */
+def uploadFolderToGoogleDrive(Map config) {
+    def buildPath = config.buildPath
+    def destFolder = config.destFolder
+    def packageGlobs = config.packageGlobs ?: '*.xvc *.msixvc *.pkg'
+
+    def rclonePath = env.RCLONE_PATH
+    if (!rclonePath) {
+        def rcloneCheck = checkRclone(true)
+        rclonePath = rcloneCheck.path ?: error("[ERROR] rclone not available")
+    }
+
+    bat """
+        @echo off
+        if not exist "${buildPath}" (
+            echo [ERROR] Build output directory does not exist: ${buildPath}
+            exit /b 1
+        )
+
+        set "HAS_CONTENT="
+        for /f %%i in ('dir /b "${buildPath}" 2^>nul') do set "HAS_CONTENT=1"
+        if not defined HAS_CONTENT (
+            echo [ERROR] Build output directory is empty: ${buildPath}
+            exit /b 1
+        )
+
+        echo Uploading directory to: %RCLONE_REMOTE%/${destFolder}
+        "${rclonePath}" copy "${buildPath}" "%RCLONE_REMOTE%/${destFolder}/" ^
+            --config "%RCLONE_CONFIG%" ^
+            --progress ^
+            --transfers=46 ^
+            --buffer-size=256M ^
+            --drive-chunk-size=256M ^
+            --drive-upload-cutoff=256M ^
+            --use-mmap ^
+            --stats=10s ^
+            --stats-one-line ^
+            -v
+        if errorlevel 1 exit /b 1
+
+        echo [INFO] Upload complete
+    """
+
+    // Look for a submission package at the top level (goto :eof so only the first match is used)
+    def fileName = bat(script: """@echo off
+cd /d "${buildPath}"
+for %%f in (${packageGlobs}) do (
+    echo %%f
+    goto :eof
+)""", returnStdout: true).trim()
+
+    def fileLink = ''
+    if (fileName) {
+        echo "[INFO] Generating GDrive link for package: ${destFolder}/${fileName}"
+        fileLink = _rcloneLink(rclonePath, "${destFolder}/${fileName}")
+        def sizeBytes = bat(script: "@for %%A in (\"${buildPath}\\${fileName}\") do @echo %%~zA", returnStdout: true).trim()
+        if (sizeBytes?.isNumber()) {
+            env.ARTIFACT_SIZE = common.formatFileSize(sizeBytes as Long)
+            echo "[INFO] Package size: ${env.ARTIFACT_SIZE}"
+        }
+    }
+
+    def folderLink = _rcloneLink(rclonePath, destFolder)
+    if (folderLink) {
+        echo "[OK] GDrive folder link: ${folderLink}"
+    } else {
+        echo "[WARN] No GDrive folder link generated - sidebar folder link will be missing"
+    }
+
+    def fileType = 'Folder'
+    if (fileLink) {
+        fileType = fileName.substring(fileName.lastIndexOf('.') + 1).toUpperCase()
+        echo "[OK] GDrive package link: ${fileLink}"
+        common.addShieldsBadge(fileType.toLowerCase(), fileType.toLowerCase(), 'brightgreen', fileLink)
+        env.GDRIVE_FILE_LINK = fileLink
+    } else if (folderLink) {
+        common.addShieldsBadge('build', 'build', 'brightgreen', folderLink)
+    }
+
+    common.addGoogleDriveLinks(folderLink, fileLink, fileType, null)
+
+    env.GDRIVE_FOLDER_LINK = folderLink ?: ''
+    common.updateUploadStatus('gdrive', 'done')
+
+    return [folderLink: folderLink, fileLink: fileLink, fileName: fileName]
 }
 
 def uploadToLocalShare(Map config) {

@@ -457,7 +457,10 @@ def copyPipelineScripts() {
         'StandaloneWindows64': 'PipelineSteam.cs',
         'StandaloneLinux64': 'PipelineSteam.cs',
         'StandaloneOSX': 'PipelineSteamMac.cs',
-        'Switch': 'PipelineSwitch.cs'
+        'Switch': 'PipelineSwitch.cs',
+        'GameCoreXboxSeries': 'PipelineXbox.cs',
+        'GameCoreXboxOne': 'PipelineXbox.cs',
+        'PS5': 'PipelinePS5.cs'
     ]
     def csFiles = ['Pipeline.cs', 'PipelineArtifactCopy.cs']
     def platformScript = platformScripts[env.PLATFORM]
@@ -629,6 +632,8 @@ def syncSteamCache(Map config = [:]) { platform.syncSteamCache(config) }
 def getSteamStagingPath() { platform.getSteamStagingPath() }
 def preflightUnityDataTool() { platform.preflightUnityDataTool() }
 def preflightNintendoSDK() { platform.preflightNintendoSDK() }
+def preflightXboxGDK() { platform.preflightXboxGDK() }
+def preflightPS5SDK() { platform.preflightPS5SDK() }
 def preflightDotNetSDK(String requiredVersion = '8.0') { platform.preflightDotNetSDK(requiredVersion) }
 def preflightLongPaths() { platform.preflightLongPaths() }
 def preflightFirebaseCLI() { platform.preflightFirebaseCLI() }
@@ -639,6 +644,8 @@ def validateLinuxBuildSupport() { platform.validateLinuxBuildSupport() }
 def validateWindowsIl2CppSupport() { platform.validateWindowsIl2CppSupport() }
 def validateMacOSBuildSupport() { platform.validateMacOSBuildSupport() }
 def validateNintendoSwitchSupport() { platform.validateNintendoSwitchSupport() }
+def validateXboxSupport() { platform.validateXboxSupport() }
+def validatePS5Support() { platform.validatePS5Support() }
 def checkCacheValidity(String unityProjectPath) { platform.checkCacheValidity(unityProjectPath) }
 def saveBuildInfo() { platform.saveBuildInfo() }
 def purgeWorkspace(String cleanCache) { platform.purgeWorkspace(cleanCache) }
@@ -657,6 +664,7 @@ def cleanPlasticWorkspace(String cleanCache = null, String workspacePath = null)
 def plasticCheckout(Map config) { platform.plasticCheckout(config) }
 def convertAabToApk(Map config) { platform.convertAabToApk(config) }
 def uploadToGoogleDrive(Map config) { platform.uploadToGoogleDrive(config) }
+def uploadFolderToGoogleDrive(Map config) { platform.uploadFolderToGoogleDrive(config) }
 def uploadToLocalShare(Map config) { platform.uploadToLocalShare(config) }
 def cleanupLocalShare(String sharePath = null) { platform.cleanupLocalShare(sharePath) }
 def uploadToGCS(Map config) { platform.uploadToGCS(config) }

@@ -189,7 +189,8 @@ def addPlatformBadge(String color = null) {
     def label = [
         Android: 'Google Play', iOS: 'App Store', Amazon: 'Amazon',
         StandaloneWindows64: 'Windows', StandaloneLinux64: 'Linux',
-        StandaloneOSX: 'macOS', Switch: 'Switch'
+        StandaloneOSX: 'macOS', Switch: 'Switch',
+        GameCoreXboxSeries: 'Xbox Series', GameCoreXboxOne: 'Xbox One', PS5: 'PS5'
     ][platform] ?: platform ?: 'Build'
     addShieldsBadge('platform', label, color ?: 'blue', null, logo)
 }
@@ -773,7 +774,10 @@ def sendSlackBuildNotification(Map config) {
         Amazon: 'https://img.icons8.com/color/48/amazon.png',
         StandaloneWindows64: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/steam.png',
         StandaloneLinux64: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/steam.png',
-        Switch: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/nintendo-switch.png'
+        Switch: 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/nintendo-switch.png',
+        GameCoreXboxSeries: 'https://img.icons8.com/color/48/xbox.png',
+        GameCoreXboxOne: 'https://img.icons8.com/color/48/xbox.png',
+        PS5: 'https://img.icons8.com/color/48/play-station.png'
     ]
     // OS icons for platforms where store icon differs from OS (e.g. Steam builds)
     def osIcons = [
@@ -813,6 +817,8 @@ def sendSlackBuildNotification(Map config) {
         if (platform == 'iOS') fileType = 'IPA'
         else if (platform == 'Switch') fileType = 'NSP'
         else if (platform == 'Amazon') fileType = 'APK'
+        else if (platform in ['GameCoreXboxSeries', 'GameCoreXboxOne']) fileType = 'Package'
+        else if (platform == 'PS5') fileType = 'PKG'
         def sizeLabel = env.ARTIFACT_SIZE ? " (${env.ARTIFACT_SIZE})" : ''
         links += " | <${env.GDRIVE_FILE_LINK}|Download ${fileType}${sizeLabel}>"
     } else if (env.GDRIVE_FOLDER_LINK) {
@@ -1602,7 +1608,7 @@ def sendUploadNotification(Map config) {
     def artifactType = 'Build'
     if (platform == 'iOS') artifactType = 'IPA'
     else if (platform == 'Switch') artifactType = 'NSP'
-    else if (platform == 'StandaloneWindows64' || platform == 'StandaloneLinux64') artifactType = 'Folder'
+    else if (platform in ['StandaloneWindows64', 'StandaloneLinux64', 'GameCoreXboxSeries', 'GameCoreXboxOne', 'PS5']) artifactType = 'Folder'
     else if (platform == 'Amazon') artifactType = 'APK'
     else if (buildType == 'Debug') artifactType = 'APK'
     else artifactType = 'AAB'
@@ -1615,7 +1621,8 @@ def sendUploadNotification(Map config) {
 
     // Set store display name
     def storeNames = [Android: 'Google Play', iOS: 'TestFlight', Amazon: 'Amazon',
-                      StandaloneWindows64: 'Steam', StandaloneLinux64: 'Steam', Switch: 'GDrive']
+                      StandaloneWindows64: 'Steam', StandaloneLinux64: 'Steam', Switch: 'GDrive',
+                      GameCoreXboxSeries: 'GDrive', GameCoreXboxOne: 'GDrive', PS5: 'GDrive']
     if (uploads.contains('store')) {
         env.UPLOAD_STORE_NAME = config.storeName ?: storeNames[platform] ?: 'Store'
     }
