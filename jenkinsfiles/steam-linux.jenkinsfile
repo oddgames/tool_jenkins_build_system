@@ -427,7 +427,9 @@ pipeline {
                         ]) {
                             script {
                                 try {
-                                    def setLive = params.BUILD_TYPE == 'Release' ? 'beta' : 'development'
+                                    // Branch names differ per app - override in the job config with STEAM_BRANCH_RELEASE /
+                                    // STEAM_BRANCH_DEBUG ('none' uploads the build without setting it live).
+                                    def setLive = params.BUILD_TYPE == 'Release' ? (env.STEAM_BRANCH_RELEASE ?: 'beta') : (env.STEAM_BRANCH_DEBUG ?: 'development')
                                     def stagingPath = buildUtils.setupSteamStaging("${env.BUILD_PATH}\\output")
                                     buildUtils.seedSteamCache(buildType: params.BUILD_TYPE, steamBranch: setLive)
 
@@ -444,7 +446,7 @@ pipeline {
 
                                 } catch (Exception e) {
                                     echo "[WARNING] Steam upload failed: ${e.message}"
-                                    buildUtils.setUnstable("Steam upload failed")
+                                    buildUtils.setUnstable("Steam upload failed: ${env.STEAM_UPLOAD_ERROR ?: e.message}")
                                 }
                             }
                         }

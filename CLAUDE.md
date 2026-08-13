@@ -107,6 +107,16 @@ Use **specific version IDs**, not bare prefix names:
 
 - **Switch NSP not building**: `BuildOptions.CompressWithLz4HC` conflicts with Switch ROM creation — removed from `PipelineSwitch.cs`. Switch uses its own compression via `switchEnableRomCompression`/`switchRomCompressionType`
 - **Steam Linux building Windows exe**: Missing `linux-il2cpp` module causes Unity to silently fall back to Windows — added `validateLinuxBuildSupport()` preflight to `steam-linux.jenkinsfile`
+- **Steam "Failed to commit build ... : Failure"**: the `SetLive` branch in the VDF must already exist on the app. The content upload succeeds and Steam still creates the build — only the commit RPC is rejected — so the build shows up in Steamworks while the pipeline reports failure. See below.
+
+## Steam SetLive Branches
+
+`steamUpload()` writes `SetLive` into the VDF. Steam rejects the whole commit if that branch doesn't exist on the app, reporting only `ERROR! Failed to commit build for AppID <id> : Failure`.
+
+- Branch defaults: Release → `beta`, otherwise → `development`. Override per job with **`STEAM_BRANCH_RELEASE`** / **`STEAM_BRANCH_DEBUG`** env vars; `none` uploads without setting live.
+- `default`/`public`/`none` are dropped automatically — **Steam does not allow setting the default branch live from SteamCMD** (site only).
+- Retries: `common.classifySteamFailure()` splits transient failures (connection drops, `Timeout`/`Busy` EResults — retried) from rejections (retried never). Retrying a rejection is pure waste: every attempt re-scans the content root **and creates another duplicate build on Steamworks**.
+- On failure the pipeline dumps the tail of SteamCMD's own `logs/content_log.txt` (the real reason; the console only says `Failure`) and, when a branch is suspected, lists the app's actual branches via `getSteamBranches()` (app info calls the default branch `public`).
 
 ## Firebase Crashlytics Symbol Upload
 

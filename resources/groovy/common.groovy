@@ -975,6 +975,113 @@ def addBuildWarning(String warning) {
 }
 
 // ============================================================================
+// STEAM UPLOAD DIAGNOSTICS
+// ============================================================================
+
+/**
+ * Classify a failed SteamCMD run_app_build from its console output.
+ *
+ * Retrying only helps for transient failures. A *rejected commit* is not
+ * transient: Steam still creates the build server-side, so every retry adds
+ * another duplicate build on Steamworks and re-scans the whole content root
+ * for nothing. This tells steamUpload() which case it is.
+ *
+ * @param output  Full SteamCMD stdout/stderr for the attempt
+ * @param setLive Branch the VDF asked to set live ('' when none)
+ * @return Map: [retryable: boolean, summary: String, hints: List, branchSuspect: boolean]
+ */
+def classifySteamFailure(String output, String setLive = '') {
+    def text = output ?: ''
+
+    // Auth - never retryable, needs a human on the agent
+    if (text.contains('Account Logon Denied') || text.contains('Steam Guard') ||
+        text.contains('Invalid Password') || text.contains('Login Failure')) {
+        return [
+            retryable: false,
+            summary  : 'SteamCMD login rejected (Steam Guard or bad credentials)',
+            hints    : [
+                'Run SteamCMD manually on the build agent and complete the Steam Guard prompt, then re-run this job.',
+                "Check the 'steam-credentials' Jenkins credential is still valid."
+            ],
+            branchSuspect: false
+        ]
+    }
+
+    // Commit rejected: "ERROR! Failed to commit build for AppID 1270920 : Failure"
+    // The trailing token is a Steam EResult name - only a few of them mean "try again".
+    def commit = (text =~ /Failed to commit build for AppID\s+(\d+)\s*:\s*([A-Za-z ]+)/)
+    if (commit.find()) {
+        def appId = commit.group(1)
+        def eresult = commit.group(2).trim()
+        def retryableResults = ['Timeout', 'Busy', 'ServiceUnavailable', 'Try Again Later', 'Pending', 'No Connection', 'Connect Failed']
+        def isRetryable = retryableResults.any { it.equalsIgnoreCase(eresult) }
+
+        def hints = ["The content upload itself SUCCEEDED - Steam commits the build even when this call is rejected. Check Steamworks > SteamPipe > Your Builds for app ${appId}: the build is almost certainly there, it just wasn't set live."]
+        if (setLive && !isRetryable) {
+            hints << "Most likely cause: branch '${setLive}' does not exist on app ${appId}. Create it in Steamworks (SteamPipe > Your Builds > 'Create new app branch'), or point the job at an existing branch with the STEAM_BRANCH_RELEASE / STEAM_BRANCH_DEBUG env var (set it to 'none' to upload without setting live)."
+            hints << "Steam does not allow setting the default branch live from SteamCMD - that has to be done on the Steamworks site."
+        }
+        hints << "Otherwise check that depot ${env.STEAM_DEPOT_ID ?: '(depot)'} is assigned to app ${appId} and that the Steam account has publish rights."
+
+        return [
+            retryable    : isRetryable,
+            summary      : "Steam rejected the build commit for app ${appId} (EResult: ${eresult})",
+            hints        : hints,
+            branchSuspect: (setLive && !isRetryable ? true : false)
+        ]
+    }
+
+    // Set-live rejected on its own
+    if (text.contains('Failed to set build live')) {
+        return [
+            retryable: false,
+            summary  : "Steam refused to set the build live on branch '${setLive}'",
+            hints    : [
+                "The build uploaded - only the set-live step failed. Set it live from Steamworks, or create branch '${setLive}'.",
+                'The account also needs publish rights on the app to set builds live.'
+            ],
+            branchSuspect: true
+        ]
+    }
+
+    // Transient network / backend
+    def transientHit = ['No Connection', 'Connection to Steam', 'Timeout', 'Rate Limit Exceeded',
+                        'Connection Reset', 'Failed to send'].find { text.contains(it) }
+    if (transientHit) {
+        return [retryable: true, summary: "Transient SteamCMD failure (${transientHit})", hints: [], branchSuspect: false]
+    }
+
+    // Local content problems - retrying uploads the same broken input
+    if (text.contains('Failed to get file list') || text.contains('could not find ContentRoot') ||
+        text.contains('Could not find ContentRoot')) {
+        return [
+            retryable: false,
+            summary  : 'SteamCMD could not read the content root',
+            hints    : ['Check the staging path exists on the agent and that setupSteamStaging() copied the build into it.'],
+            branchSuspect: false
+        ]
+    }
+
+    return [retryable: true, summary: 'SteamCMD failed (see output above)', hints: [], branchSuspect: false]
+}
+
+/**
+ * Print a classified Steam failure as a readable block in the console log.
+ */
+def reportSteamFailure(Map failure, List branches = null) {
+    echo "========================================"
+    echo "Steam Upload FAILED"
+    echo "========================================"
+    echo "Reason: ${failure.summary}"
+    if (branches != null) {
+        echo "Branches that exist on this app: ${branches ? branches.join(', ') : '(none reported)'}"
+        echo "  ('public' is how Steam names the default branch in app info)"
+    }
+    (failure.hints ?: []).each { echo "  - ${it}" }
+    echo "========================================"
+}
+
+// ============================================================================
 // INTERNAL HELPER FUNCTIONS
 // ============================================================================
 

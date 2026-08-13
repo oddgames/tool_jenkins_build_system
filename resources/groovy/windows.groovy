@@ -906,6 +906,13 @@ def steamUpload(Map config) {
     def artifactPath = config.artifactPath ?: env.ARTIFACT_PATH
     def maxRetries = config.maxRetries ?: 3
 
+    // Steam refuses SetLive on the default branch from SteamCMD - asking for it
+    // fails the whole commit, so upload without it and let a human set it live.
+    if (setLive && (setLive.equalsIgnoreCase('default') || setLive.equalsIgnoreCase('public') || setLive.equalsIgnoreCase('none'))) {
+        echo "[WARN] SetLive '${setLive}' cannot be set from SteamCMD - uploading without SetLive. Set the build live on the Steamworks site."
+        setLive = ''
+    }
+
     // Use persistent local cache for delta uploads if seedSteamCache() was called
     def buildOutputPath = env.STEAM_LOCAL_CACHE_PATH ?: 'steam_logs'
 
@@ -961,6 +968,8 @@ def steamUpload(Map config) {
     def vdfFile = "${artifactPath}\\${vdfName}"
     def lastError = ''
 
+    def failure = null
+
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
         echo "[INFO] Steam upload attempt ${attempt}/${maxRetries}..."
 
@@ -970,9 +979,9 @@ def steamUpload(Map config) {
                 script: """
                     @echo off
                     "%STEAMCMD_PATH%" +login "%STEAM_USERNAME%" "%STEAM_PASSWORD%" +run_app_build "${vdfFile}" +quit 2>&1
-                    set STEAM_EXIT=%%errorlevel%%
+                    set STEAM_EXIT=%errorlevel%
                     echo.
-                    echo STEAM_EXIT_CODE:%%STEAM_EXIT%%
+                    echo STEAM_EXIT_CODE:%STEAM_EXIT%
                     exit /b 0
                 """,
                 returnStdout: true
@@ -981,23 +990,31 @@ def steamUpload(Map config) {
             // Print full SteamCMD output to Jenkins console
             echo output
 
-            // Fail fast on auth errors - retrying won't help
-            if (output.contains('Account Logon Denied') || output.contains('Steam Guard')) {
-                common.updateUploadStatus('store', 'failed')
-                error("[ERROR] Steam Guard authentication required. Run SteamCMD manually on the build agent, enter the Steam Guard code, then retry.")
-            }
-
             if (output.contains('Successfully finished') || output.contains('STEAM_EXIT_CODE:0')) {
                 echo "[OK] Steam upload succeeded on attempt ${attempt}"
                 common.updateUploadStatus('store', 'done')
                 return
             }
 
-            lastError = "SteamCMD failed (see output above)"
+            failure = common.classifySteamFailure(output, setLive)
         } catch (hudson.AbortException e) {
             throw e
         } catch (Exception e) {
-            lastError = e.message
+            failure = [retryable: true, summary: e.message, hints: [], branchSuspect: false]
+        }
+
+        lastError = failure.summary
+
+        // Steam commits the build server-side even when it reports the commit as
+        // failed, so retrying a rejection just piles up duplicate builds. Stop.
+        if (!failure.retryable) {
+            echo "[WARN] Steam upload attempt ${attempt} failed: ${lastError}"
+            echo "[INFO] Not retrying - this failure won't clear on its own."
+            dumpSteamContentLog()
+            common.reportSteamFailure(failure, failure.branchSuspect ? getSteamBranches(appId) : null)
+            common.updateUploadStatus('store', 'failed')
+            env.STEAM_UPLOAD_ERROR = lastError
+            error("[ERROR] ${lastError}")
         }
 
         if (attempt < maxRetries) {
@@ -1008,8 +1025,81 @@ def steamUpload(Map config) {
         }
     }
 
+    dumpSteamContentLog()
+    if (failure) common.reportSteamFailure(failure, null)
     common.updateUploadStatus('store', 'failed')
+    env.STEAM_UPLOAD_ERROR = lastError
     error("[ERROR] Steam upload failed after ${maxRetries} attempts. Last error: ${lastError}")
+}
+
+/**
+ * Dump the tail of SteamCMD's own content log - it carries the real reason a
+ * commit was rejected, which the console output only summarises as 'Failure'.
+ */
+def dumpSteamContentLog(int tailLines = 60) {
+    if (!env.STEAMCMD_PATH) return
+
+    def logDir = "${env.STEAMCMD_PATH.replace('\\steamcmd.exe', '')}\\logs"
+    bat(script: """@echo off
+        if exist "${logDir}\\content_log.txt" (
+            echo ===== SteamCMD content_log.txt ^(last ${tailLines} lines^) =====
+            powershell -NoProfile -Command "Get-Content -LiteralPath '${logDir}\\content_log.txt' -Tail ${tailLines}"
+            echo ===== end content_log.txt =====
+        ) else (
+            echo [INFO] No content_log.txt found in ${logDir}
+        )
+        exit /b 0
+    """)
+}
+
+/**
+ * Best-effort list of the branches that exist on a Steam app, for failure
+ * diagnostics. Must run inside a withCredentials block providing Steam creds.
+ *
+ * @return List of branch names ('public' is the default branch), or null if the
+ *         query failed or app_info returned no branches block.
+ */
+def getSteamBranches(appId) {
+    if (!appId || !env.STEAMCMD_PATH) return null
+
+    def steamCmdDir = env.STEAMCMD_PATH.replace('\\steamcmd.exe', '')
+    def output = ''
+    try {
+        // app_info_print twice - works around the SteamCMD non-TTY truncation bug
+        output = bat(
+            script: """
+                @echo off
+                cd /d "${steamCmdDir}"
+                "${env.STEAMCMD_PATH}" +login "%STEAM_USERNAME%" "%STEAM_PASSWORD%" +app_info_update 1 +app_info_print ${appId} +app_info_print ${appId} +quit
+            """,
+            returnStdout: true
+        )
+    } catch (Exception e) {
+        echo "[WARN] getSteamBranches: app_info_print failed - ${e.message}"
+        return null
+    }
+
+    def branches = []
+    def inBranches = false
+    def depth = 0
+    for (raw in output.split('\r?\n')) {
+        def trimmed = raw.trim()
+        if (!inBranches) {
+            if (trimmed == '"branches"') { inBranches = true; depth = 0 }
+            continue
+        }
+        if (trimmed == '{') { depth++; continue }
+        if (trimmed == '}') {
+            depth--
+            if (depth <= 0) break
+            continue
+        }
+        // Branch names sit at depth 1 as a lone quoted token; keys inside a
+        // branch are "key" "value" pairs and won't match.
+        if (depth == 1 && trimmed ==~ /"[^"]+"/) branches << trimmed.replace('"', '')
+    }
+
+    return inBranches ? branches : null
 }
 
 // Persistent tools directory (survives workspace cleanup)

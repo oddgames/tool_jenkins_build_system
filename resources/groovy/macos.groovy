@@ -1585,6 +1585,13 @@ def steamUpload(Map config) {
     def artifactPath = config.artifactPath ?: env.ARTIFACT_PATH
     def maxRetries = config.maxRetries ?: 3
 
+    // Steam refuses SetLive on the default branch from SteamCMD - asking for it
+    // fails the whole commit, so upload without it and let a human set it live.
+    if (setLive && (setLive.equalsIgnoreCase('default') || setLive.equalsIgnoreCase('public') || setLive.equalsIgnoreCase('none'))) {
+        echo "[WARN] SetLive '${setLive}' cannot be set from SteamCMD - uploading without SetLive. Set the build live on the Steamworks site."
+        setLive = ''
+    }
+
     echo "========================================"
     echo "Steam Upload"
     echo "========================================"
@@ -1627,27 +1634,48 @@ ${setLiveLine}
     echo vdfContent
 
     def lastError = ''
+    def failure = null
 
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
         echo "[INFO] Steam upload attempt ${attempt}/${maxRetries}..."
 
         try {
-            def result = sh(
-                script: """
-                    "${env.STEAMCMD_PATH}" +login "\${STEAM_USERNAME}" "\${STEAM_PASSWORD}" +run_app_build "${vdfFile}" +quit
-                """,
-                returnStatus: true
-            )
+            // tee so the upload still streams to the console live, while the
+            // output is captured for classification. The exit code is echoed
+            // from inside the subshell so it's SteamCMD's, not tee's.
+            def uploadLog = "${env.WORKSPACE}/steamcmd_upload.log"
+            sh """
+                set +e
+                ( "${env.STEAMCMD_PATH}" +login "\${STEAM_USERNAME}" "\${STEAM_PASSWORD}" +run_app_build "${vdfFile}" +quit 2>&1; echo "STEAM_EXIT_CODE:\$?" ) | tee "${uploadLog}"
+                exit 0
+            """
+            def output = readFile(file: uploadLog)
 
-            if (result == 0) {
+            if (output.contains('Successfully finished') || output.contains('STEAM_EXIT_CODE:0')) {
                 echo "[OK] Steam upload succeeded on attempt ${attempt}"
                 common.updateUploadStatus('store', 'done')
                 return
             }
 
-            lastError = "SteamCMD exited with code ${result}"
+            failure = common.classifySteamFailure(output, setLive)
+        } catch (hudson.AbortException e) {
+            throw e
         } catch (Exception e) {
-            lastError = e.message
+            failure = [retryable: true, summary: e.message, hints: [], branchSuspect: false]
+        }
+
+        lastError = failure.summary
+
+        // Steam commits the build server-side even when it reports the commit as
+        // failed, so retrying a rejection just piles up duplicate builds. Stop.
+        if (!failure.retryable) {
+            echo "[WARNING] Steam upload attempt ${attempt} failed: ${lastError}"
+            echo "[INFO] Not retrying - this failure won't clear on its own."
+            dumpSteamContentLog()
+            common.reportSteamFailure(failure, null)
+            common.updateUploadStatus('store', 'failed')
+            env.STEAM_UPLOAD_ERROR = lastError
+            error "[ERROR] ${lastError}"
         }
 
         if (attempt < maxRetries) {
@@ -1657,8 +1685,31 @@ ${setLiveLine}
         }
     }
 
+    dumpSteamContentLog()
+    if (failure) common.reportSteamFailure(failure, null)
     common.updateUploadStatus('store', 'failed')
+    env.STEAM_UPLOAD_ERROR = lastError
     error "[ERROR] Steam upload failed after ${maxRetries} attempts: ${lastError}"
+}
+
+/**
+ * Dump the tail of SteamCMD's own content log - it carries the real reason a
+ * commit was rejected, which the console output only summarises as 'Failure'.
+ */
+def dumpSteamContentLog(int tailLines = 60) {
+    if (!env.STEAMCMD_PATH) return
+
+    sh(script: """
+        LOG="\$(dirname "${env.STEAMCMD_PATH}")/logs/content_log.txt"
+        if [ -f "\$LOG" ]; then
+            echo "===== SteamCMD content_log.txt (last ${tailLines} lines) ====="
+            tail -n ${tailLines} "\$LOG"
+            echo "===== end content_log.txt ====="
+        else
+            echo "[INFO] No content_log.txt found at \$LOG"
+        fi
+        exit 0
+    """)
 }
 
 /**
