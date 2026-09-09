@@ -668,6 +668,18 @@ def checkUnityModules(String version, List modules, boolean autoInstall = false)
 }
 
 /**
+ * True when Unity Hub says it can't act on an editor it should know about. All three messages
+ * mean the same thing: the editor is not in this user's Hub registry (installed manually, by
+ * another user, or outside the Hub's install path).
+ */
+private def _hubLostEditor(String output) {
+    if (!output) return false
+    return output.contains('only supported for editors installed with Unity Hub') ||
+           output.contains('No modules found for this editor') ||
+           output.contains('No editor found for version')
+}
+
+/**
  * Install Unity modules via Unity Hub CLI.
  * First tries install-modules (for Hub-tracked editors), then falls back to
  * install --version -m (which re-registers the editor and installs modules in one pass).
@@ -690,17 +702,46 @@ def installUnityModules(String version, List modules) {
     def output = ''
     try {
         timeout(time: 15, unit: 'MINUTES') {
-            output = sh(script: "${cmd} 2>&1", returnStdout: true).trim()
+            // '|| true' so returnStdout still yields the output when Hub exits non-zero -
+            // we decide what happened from the message, not the exit code.
+            output = sh(script: "${cmd} 2>&1 || true", returnStdout: true).trim()
         }
     } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
         echo "[WARN] Unity Hub install-modules timed out — checking if modules are present anyway..."
     }
     if (output) { echo output }
 
-    // If Hub doesn't recognize the editor, try `install` with -m flags to re-register it.
-    // Don't delete the editor — that triggers a full re-download (~5GB+).
-    if (output.contains('only supported for editors installed with Unity Hub') || output.contains('No modules found for this editor')) {
-        echo "[WARN] Hub doesn't track this editor — trying install command to re-register and add modules..."
+    // Hub can lose track of an editor that is present on disk (installed by another user, or
+    // its install path points elsewhere). Repair the registry and retry before reinstalling -
+    // never delete the editor, that triggers a full re-download (~5GB+).
+    if (_hubLostEditor(output)) {
+        echo "[WARN] Hub doesn't recognise Unity ${version} — diagnosing before reinstalling"
+        sh script: "pkill -f 'Unity Hub' 2>/dev/null || true"
+        logInstalledEditors()
+
+        def installRoot = '/Applications/Unity/Hub/Editor'
+        def unityBin = "${installRoot}/${version}/Unity.app/Contents/MacOS/Unity"
+        def onDisk = sh(script: "[ -f '${unityBin}' ] && echo found || echo notfound", returnStdout: true).trim()
+        if (onDisk == 'found') {
+            echo "[INFO] Unity ${version} IS on disk — pointing Hub at ${installRoot} and retrying install-modules"
+            sh script: "\"${env.UNITY_HUB_PATH}\" -- --headless install-path -s '${installRoot}' 2>&1 || true"
+            try {
+                timeout(time: 15, unit: 'MINUTES') {
+                    output = sh(script: "${cmd} 2>&1 || true", returnStdout: true).trim()
+                }
+            } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
+                echo "[WARN] Unity Hub install-modules retry timed out"
+            }
+            if (output) { echo output }
+            sh script: "pkill -f 'Unity Hub' 2>/dev/null || true"
+        } else {
+            echo "[WARN] Unity ${version} is not at ${installRoot} either — a full install is needed"
+        }
+    }
+
+    // Still not tracked: install the editor with -m flags, which registers it and adds the modules.
+    if (_hubLostEditor(output)) {
+        echo "[WARN] Hub still doesn't track this editor — trying install command to re-register and add modules..."
         sh script: "pkill -f 'Unity Hub' 2>/dev/null || true"
 
         def changesetArg = env.UNITY_CHANGESET ? "-c ${env.UNITY_CHANGESET}" : ''

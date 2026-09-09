@@ -66,11 +66,45 @@ The **build pipeline still checks out the Unity game projects from Plastic SCM**
 **NEVER add a `cm` command to code unless verified** via docs or `cm <command> --help`. GUI-only features do NOT necessarily have CLI equivalents.
 
 #### Verified `cm` Commands
-- `cm status`, `cm history <file>`, `cm cat <file>`, `cm undo . -r`, `cm update --forced`, `cm switch`, `cm find changeset`
+- `cm status`, `cm history <file>`, `cm cat <file>`, `cm undo . -r`, `cm update --forced`, `cm switch`, `cm find changeset`, `cm ls --tree=<cs>@<repspec> -R --format={path}` (server tree, no workspace copy needed), `cm remove [--nodisk]`, `cm checkin`
 
 #### Known Non-Existent Commands
 - `cm diff` — visual/UI tool only, won't work on CLI
 - `cm workspace checkcontent` — **does not exist**; "Check content (hash)" is GUI-only
+
+#### Windows Reserved Names (`nul`, `con`, `aux`, ...)
+
+Files named after a DOS device (checked in from macOS/Linux, e.g. `Back4App/cloud_code/nul`)
+cannot be created on Windows, so every checkout logs
+`Error updating '<path>': Stream does not support seeking.` and `cm switch` exits 1.
+Deleting the file locally is useless — it is *controlled*, so the next update re-fetches it.
+
+`_writeCloakedConf()` (windows.groovy) writes leaf-name rules for all reserved device names
+into `<workspace>/cloaked.conf` before `cm workspace create` / `cm switch`, and cloaked items
+are skipped by update/switch (`cm update --cloaked` is the opt-in to include them — verified
+in `cm help update`). `cleanPlasticWorkspace()` keeps that file when it deletes private files.
+- Job env `PLASTIC_CLOAK_PATHS` — `;`-separated extra rules, workspace-relative and starting
+  with `/` (e.g. `/UnityProj_MTD/Back4App/cloud_code/nul`). Use it if the leaf-name rule isn't
+  enough, or to skip large folders the build doesn't need.
+
+**Detection**: `findReservedNamesInRepo()` runs `cm ls --tree=<cs>@<repspec> -R --format={path}`
+and filters it with `findstr /i /e` on the agent, so it finds these items in the *repo* even
+though no Windows workspace can hold them. `plasticCheckout()` calls it at the end and prints
+the paths plus the removal commands. Cost on MTD: 63,783 paths in ~9s. `SCAN_RESERVED_NAMES=false`
+skips it; hits are also exported as `env.PLASTIC_RESERVED_ITEMS`.
+
+**Removal is impossible from Windows** — verified against a real workspace, don't retry it:
+- `cm remove --nodisk "...\cloud_code\nul"` → `\\.\nul is not in a workspace.` .NET
+  normalises any path whose leaf is a device name to the device itself, so cm never sees the
+  real path.
+- The `\\?\C:\...` extended-length form *is* accepted (`cm remove controlled --nodisk` exits 0)
+  but is a silent no-op: the item never materialised, so it is not in the workspace tree —
+  `cm ls <folder>` doesn't list it and `cm status --localdeleted` reports nothing, so there is
+  no local deletion to check in either.
+- Removing the *parent folder* and re-adding it does work on Windows, but breaks history for
+  every real file in it (~50 in `cloud_code`) — not worth it.
+- **Do it on macOS/Linux**, where the name is legal (the iOS agents have `cm`):
+  `cm remove "<path>"` then `cm checkin "<path>" -c "..."`, on the branch that carries the file.
 
 ## Jenkins Constraints
 

@@ -1724,7 +1724,7 @@ private def _doInstallUnityModules(String version, List modules) {
 
     // If Hub doesn't recognize the editor, try `install` with -m flags to re-register it.
     // Don't delete the editor — that triggers a full re-download (~5GB+).
-    if (output.contains('only supported for editors installed with Unity Hub') || output.contains('No modules found for this editor')) {
+    if (output.contains('only supported for editors installed with Unity Hub') || output.contains('No modules found for this editor') || output.contains('No editor found for version')) {
         echo "[WARN] Hub doesn't track this editor — trying install command to re-register and add modules..."
         def installCmd = "cmd /c \"\"${env.UNITY_HUB_PATH}\" -- --headless install --version ${version} ${changesetArg} ${moduleArgs} -cm\""
         echo "[INFO] Running: ${installCmd}"
@@ -5580,7 +5580,9 @@ def cleanPlasticWorkspace(String cleanCache = null, String workspacePath = null)
     def cacheTypes = cleanCache?.split(',')?.collect { it.trim() } ?: []
     def doVerify = cacheTypes.contains('Verify Workspace')
 
-    // Remove Windows reserved-name files (nul, con, ...) the normal `del` and cm can't handle.
+    // Cloak reserved names so the cm calls below (undo / update --forced) skip them, then
+    // remove any reserved-name file the normal `del` and cm can't handle.
+    _writeCloakedConf(wsPath)
     deleteReservedNameFiles(wsPath)
 
     // Single consolidated bat call: check status, undo changes, remove private files, optional verify
@@ -5623,7 +5625,9 @@ REM Remove private files (files only, skip directories to avoid nuking tracked c
 set "PRIVATE=0"
 for /f "delims=" %%f in ('cm status --private --short --cutignored 2^>nul') do (
     set /a PRIVATE+=1
-    if exist "%%f\\*" (
+    if /i "%%~nxf"=="cloaked.conf" (
+        echo   Kept: cloaked.conf >&2
+    ) else if exist "%%f\\*" (
         echo   Skipped dir: %%~nxf >&2
     ) else if exist "%%f" (
         del /f /q "%%f"
@@ -5704,6 +5708,53 @@ def _deregisterStalePlasticWorkspace(String wsName) {
 }
 
 /**
+ * Write (merge into) <workspace>/cloaked.conf so Plastic never tries to download items whose
+ * leaf name is a Windows reserved device name: nul, con, prn, aux, com1-9, lpt1-9.
+ *
+ * Those names are legal on macOS/Linux and do get checked in from there (e.g.
+ * Back4App/cloud_code/nul), but Windows cannot create them, so every checkout reports
+ *   Error updating '.../cloud_code/nul': Stream does not support seeking.
+ * and cm exits 1. Deleting the file locally does not help - it is a *controlled* item, so the
+ * next switch/update fetches it again. Cloaked items are skipped by update/switch (cm update
+ * --cloaked is the documented opt-in to include them), so cloaking removes the error at the
+ * source instead of tolerating it.
+ *
+ * Extra job-specific rules: PLASTIC_CLOAK_PATHS env var, ";"-separated, workspace-relative
+ * paths starting with "/" (e.g. "/UnityProj_MTD/Back4App/cloud_code/nul;/ArtSource").
+ *
+ * Best-effort: never fails the build. The permanent fix is deleting the offending file from
+ * the Plastic repo (do it from a macOS agent, where the name is legal).
+ */
+private def _writeCloakedConf(String wsDir) {
+    if (!wsDir) return
+    def confPath = "${wsDir}\\cloaked.conf"
+    try {
+        // Leaf-name rules: match an item with this name in any directory.
+        def rules = ['nul', 'con', 'prn', 'aux',
+                     'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+                     'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9']
+        def extraPaths = env.PLASTIC_CLOAK_PATHS ?: ''
+        extraPaths.split(';').each { entry ->
+            def rule = entry.trim()
+            if (rule) rules << rule
+        }
+        def existing = fileExists(confPath) ? readFile(file: confPath).readLines() : []
+        def have = existing.collect { it.trim().toLowerCase() }
+        def missing = rules.findAll { !have.contains(it.toLowerCase()) }
+        if (!missing) return
+        def marker = '# Windows reserved device names - managed by tool_jenkins_build_system'
+        def lines = []
+        lines.addAll(existing)
+        if (!have.contains(marker.toLowerCase())) lines << marker
+        lines.addAll(missing)
+        writeFile file: confPath, text: lines.join('\r\n') + '\r\n'
+        echo "  Cloaked ${missing.size()} rule(s) in cloaked.conf: ${missing.join(', ')}"
+    } catch (Exception e) {
+        echo "[DEBUG] Could not write ${confPath}: ${e.message}"
+    }
+}
+
+/**
  * Scan a workspace directory for Windows reserved filenames (nul, con, prn, aux, com1-9, lpt1-9)
  * and delete them using Win32 API via the \\?\ prefix which bypasses Windows name restrictions.
  * These files can end up in the workspace when checked in from macOS/Linux.
@@ -5718,6 +5769,71 @@ private def _removeReservedFilenames(String wsDir) {
     } catch (Exception e) {
         echo "[DEBUG] Reserved filename cleanup failed: ${e.message}"
     }
+}
+
+/**
+ * List repository items whose leaf name is a Windows reserved device name.
+ *
+ * Uses `cm ls --tree` (verified in `cm help ls`), which lists the *server* tree of a
+ * changeset - so it finds these items even though Windows can never materialise them in the
+ * workspace, and even when they are cloaked. Filtered by findstr on the agent so only the
+ * offending paths (not the whole tree) come back to the controller.
+ *
+ * @return List of server paths, e.g. ['/UnityProj_MTD/Back4App/cloud_code/nul']
+ */
+def findReservedNamesInRepo(String wsDir, String csId, String repSpec) {
+    def names = ['nul', 'con', 'prn', 'aux',
+                 'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8', 'com9',
+                 'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9']
+    // /e matches at end of line, so "/nul" only matches a leaf named nul (not nullable.cs)
+    def patterns = names.collect { "/c:\"/${it}\"" }.join(' ')
+    def out = bat(
+        script: "@cd /d \"${wsDir}\" && (cm ls \"/\" \"--tree=${csId}@${repSpec}\" -R --format={path} 2>nul | findstr /i /e ${patterns}) & exit /b 0",
+        returnStdout: true
+    )
+    return out.readLines().collect { it.trim() }.findAll { it.startsWith('/') }
+}
+
+/**
+ * Report repo items Windows can never check out, with the exact commands to delete them.
+ *
+ * Cloaking (see _writeCloakedConf) stops the checkout error, but the item stays in the repo
+ * and every Windows workspace keeps skipping it - so surface it once per build with a fix.
+ * Set SCAN_RESERVED_NAMES=false on the job to skip the scan.
+ */
+private def _reportReservedRepoItems(String wsDir, String csId, String repSpec) {
+    if (env.SCAN_RESERVED_NAMES?.toLowerCase() == 'false') return
+    def items = []
+    try {
+        echo "[Checkout] Scanning the repo tree for Windows-reserved names (set SCAN_RESERVED_NAMES=false to skip)"
+        items = findReservedNamesInRepo(wsDir, csId, repSpec)
+    } catch (Exception e) {
+        echo "[DEBUG] Reserved-name repo scan failed: ${e.message}"
+        return
+    }
+    if (!items) return
+    env.PLASTIC_RESERVED_ITEMS = items.join(';')
+    def relPath = items[0].replaceFirst('^/', '')
+    def lines = []
+    lines << '=============================================================================='
+    lines << "[RESERVED] ${items.size()} repo item(s) have a Windows reserved device name (nul/con/aux/...)."
+    lines << "[RESERVED] Windows cannot create these, so cm reports \"Stream does not support seeking\""
+    lines << "[RESERVED] on every checkout. They are cloaked, so this build is fine - but the only"
+    lines << "[RESERVED] permanent fix is deleting them from the repo:"
+    lines << '[RESERVED]'
+    items.each { lines << "[RESERVED]   ${it}" }
+    lines << '[RESERVED]'
+    lines << "[RESERVED] This CANNOT be done from Windows (verified): .NET normalises any path"
+    lines << "[RESERVED] ending in a device name to the device itself, so cm answers 'not in a"
+    lines << "[RESERVED] workspace'. And because the item never materialises, it is not in the"
+    lines << "[RESERVED] workspace tree either - nothing to cm remove, nothing locally deleted."
+    lines << "[RESERVED] Do it on a macOS/Linux client - the iOS build agents have cm installed:"
+    lines << "[RESERVED]   cd <a workspace on this branch>"
+    lines << "[RESERVED]   cm remove \"${relPath}\""
+    lines << "[RESERVED]   cm checkin \"${relPath}\" -c \"Remove Windows-reserved filename\""
+    lines << "[RESERVED] Set SCAN_RESERVED_NAMES=false to skip this scan."
+    lines << '=============================================================================='
+    echo lines.join('\n')
 }
 
 /**
@@ -5743,6 +5859,8 @@ def plasticCheckout(Map config) {
 
     if (hasWorkspace != 'true') {
         bat "@if not exist \"${wsDir}\" mkdir \"${wsDir}\""
+        // cm workspace create downloads content, so cloak reserved names before it runs
+        _writeCloakedConf(wsDir)
         def safeName = env.JOB_NAME.replaceAll('[^a-zA-Z0-9_-]', '_')
         def wsName = "ci_${env.NODE_NAME}_${safeName}"
 
@@ -5773,7 +5891,9 @@ def plasticCheckout(Map config) {
         }
     }
 
-    // 2. Remove Windows reserved filenames (nul, con, prn, etc.) that Plastic can't update/delete
+    // 2. Cloak Windows reserved names so cm stops trying to download them, then delete any
+    //    that already made it into the workspace
+    _writeCloakedConf(wsDir)
     _removeReservedFilenames(wsDir)
 
     // 3. Undo any pending changes left from a previous build (prevents switch failure)
@@ -5794,7 +5914,8 @@ def plasticCheckout(Map config) {
         error "[Checkout] Either 'branch' or 'changeset' must be specified"
     }
     if (switchResult != 0) {
-        echo "[WARN] cm switch exited with code ${switchResult} — may be caused by Windows reserved filenames (harmless)"
+        echo "[WARN] cm switch exited with code ${switchResult}"
+        echo "[WARN] If the log shows: Error updating '<path>': Stream does not support seeking - that path is a Windows reserved device name (nul/con/aux/...). Those are cloaked by leaf name in cloaked.conf; if one keeps coming back, add its exact workspace-relative path to the PLASTIC_CLOAK_PATHS job env var, or delete it from the Plastic repo (from a macOS agent, where the name is legal)."
     }
 
     // 5. Get loaded changeset ID from workspace status
@@ -5823,6 +5944,10 @@ def plasticCheckout(Map config) {
     ]
 
     echo "[OK] Loaded changeset ${result.PLASTICSCM_CHANGESET_ID} on ${result.PLASTICSCM_BRANCH} by ${result.PLASTICSCM_AUTHOR}"
+
+    // 7. Report repo items Windows can never check out (cloaked above), with the fix commands
+    _reportReservedRepoItems(wsDir, csId, repSpec)
+
     return result
 }
 
