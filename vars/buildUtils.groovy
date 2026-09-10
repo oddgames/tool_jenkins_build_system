@@ -719,6 +719,7 @@ def preflightKeychain(String keychainPassword) { platform.preflightKeychain(keyc
 def unlockKeychain(String keychainPassword) { platform.unlockKeychain(keychainPassword) }
 def runCocoaPods(String xcodePath) { platform.runCocoaPods(xcodePath) }
 def archiveXcodeProject(Map config) { platform.archiveXcodeProject(config) }
+def normalizeFrameworkLinkerFlags(String xcodePath) { platform.normalizeFrameworkLinkerFlags(xcodePath) }
 def exportXcodeArchive(Map config) { platform.exportXcodeArchive(config) }
 def generateExportOptionsPlist(Map config) { platform.generateExportOptionsPlist(config) }
 def uploadToTestFlight(Map config) { platform.uploadToTestFlight(config) }

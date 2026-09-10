@@ -2017,6 +2017,53 @@ def configureGitHubOrgPats() {
 }
 
 /**
+ * Strip malformed "-framework Foo.framework" flags from the generated Xcode project and the
+ * CocoaPods xcconfigs, and report every file that carried one.
+ *
+ * ld appends ".framework" to whatever token follows -framework, so a flag that already has the
+ * extension makes it search for Foo.framework.framework and fail with
+ *   ld: framework 'Foo.framework' not found
+ * The name without the extension is the only valid form, so the rewrite is safe and idempotent.
+ *
+ * Several tools write this project - Unity post-processors, EDM4U's pod install, EDM4U's Swift
+ * Package integration, and third-party podspecs that declare s.frameworks with the extension -
+ * so normalising here, after all of them have run and before xcodebuild, is the only place that
+ * catches every source. The log names the offending file, which identifies the culprit.
+ */
+def normalizeFrameworkLinkerFlags(String xcodePath) {
+    if (!xcodePath) return
+    echo "[INFO] Normalising '-framework X.framework' linker flags under ${xcodePath}"
+    sh """
+        cd "${xcodePath}" 2>/dev/null || exit 0
+
+        FILES=""
+        [ -f Unity-iPhone.xcodeproj/project.pbxproj ] && FILES="Unity-iPhone.xcodeproj/project.pbxproj"
+        [ -d Pods ] && FILES="\$FILES \$(find Pods -name '*.xcconfig' 2>/dev/null)"
+        FILES="\$FILES \$(find . -maxdepth 2 -name '*.xcconfig' -not -path './Pods/*' 2>/dev/null)"
+
+        CHANGED=0
+        for f in \$FILES; do
+            [ -f "\$f" ] || continue
+            BEFORE=\$(cksum "\$f" | awk '{print \$1}')
+            # Two forms: the pbxproj array ("-framework", "Foo.framework"), whose tokens sit on
+            # separate lines, and the xcconfig one-liner (-framework "Foo.framework").
+            perl -0777 -pi -e 's/("-framework",\\s*")([A-Za-z0-9_+.-]+)\\.framework(")/\$1\$2\$3/gs; s/(-framework\\s+"?)([A-Za-z0-9_+.-]+)\\.framework\\b/\$1\$2/g' "\$f"
+            AFTER=\$(cksum "\$f" | awk '{print \$1}')
+            if [ "\$BEFORE" != "\$AFTER" ]; then
+                echo "  [FIXED] \$f carried a -framework flag with a .framework suffix"
+                CHANGED=\$((CHANGED+1))
+            fi
+        done
+
+        if [ "\$CHANGED" -eq 0 ]; then
+            echo "  No malformed framework flags found"
+        else
+            echo "[OK] Normalised \$CHANGED file(s) - the file named above identifies the SDK at fault"
+        fi
+    """
+}
+
+/**
  * Remove git auth configuration added by configureGitAuth()/configureGitHubOrgPats().
  * Called in the post block to avoid leaving credentials on disk. The get-regexp output
  * (which includes token-bearing key names) is piped straight into the unset loop, so it
@@ -2351,6 +2398,10 @@ def archiveXcodeProject(Map config) {
     def configuration = config.configuration ?: (env.BUILD_TYPE == 'Debug' ? 'Debug' : 'Release')
 
     echo "[INFO] Xcode archive configuration: ${configuration}"
+
+    // Runs after every project-mutating tool (Unity post-processors, pod install, EDM4U SPM)
+    // and before xcodebuild, so a bad -framework flag from any of them is caught in one place.
+    normalizeFrameworkLinkerFlags(xcodePath)
 
     // Automatic signing reconciles the embedded entitlements DOWN to whatever the
     // provisioning profile it resolves grants. A stale managed profile on this agent
