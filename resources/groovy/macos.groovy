@@ -2047,7 +2047,8 @@ def normalizeFrameworkLinkerFlags(String xcodePath) {
             BEFORE=\$(cksum "\$f" | awk '{print \$1}')
             # Two forms: the pbxproj array ("-framework", "Foo.framework"), whose tokens sit on
             # separate lines, and the xcconfig one-liner (-framework "Foo.framework").
-            perl -0777 -pi -e 's/("-framework",\\s*")([A-Za-z0-9_+.-]+)\\.framework(")/\$1\$2\$3/gs; s/(-framework\\s+"?)([A-Za-z0-9_+.-]+)\\.framework\\b/\$1\$2/g' "\$f"
+            # -weak_framework/-lazy_framework/-reexport_framework take the same argument.
+            perl -0777 -pi -e 's/("-(?:weak_|lazy_|reexport_)?framework",\\s*")([A-Za-z0-9_+.-]+)\\.framework(")/\$1\$2\$3/gs; s/(-(?:weak_|lazy_|reexport_)?framework\\s+"?)([A-Za-z0-9_+.-]+)\\.framework\\b/\$1\$2/g' "\$f"
             AFTER=\$(cksum "\$f" | awk '{print \$1}')
             if [ "\$BEFORE" != "\$AFTER" ]; then
                 echo "  [FIXED] \$f carried a -framework flag with a .framework suffix"
