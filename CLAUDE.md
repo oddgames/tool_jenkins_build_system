@@ -116,6 +116,16 @@ skips it; hits are also exported as `env.PLASTIC_RESERVED_ITEMS`.
 - **When adding sandbox-restricted API calls** (anything under `jenkins.model.*`, `hudson.*`, `org.jenkinsci.*`, `rawBuild.*`, `classLoader.*`, `.newInstance()`), **add a matching `testPermission()` block** to `preflightJenkinsPermissions()`. Each permission MUST have its own try/catch so all pending signatures are queued at once in Jenkins' Script Approval page.
 - Node selection API (`pickNode()`) requires: `Jenkins.get`, `getLabel`, `getLabels`, `Node.toComputer`, `Node.getDisplayName`, `LabelAtom.getNodes`, `Computer.isOnline`, `Computer.numExecutors`, `Computer.getExecutors`, `Executor.isBusy`, `Executor.getCurrentExecutable`, `Run.getParent`, `Queue.Task.getOwnerTask` (resolves a pipeline's PlaceholderTask to its owning job — plain `getFullName()` on the executor task throws for pipelines, which was silently disabling conflict detection and causing `@2` workspaces), `Job.getFullName`, `Jenkins.getQueue`, `Queue.getItems`, `Queue.Item.getAssignedLabel`, `Queue.Item.task`
 
+### CPS Serialization
+
+Pipeline code is CPS-transformed: every local that is still in scope when a step runs must be
+serializable. A `java.util.regex.Matcher` is not — holding one across a step (especially a
+`lock`/`timeout` block) throws `NotSerializableException`, and its `getMessage()` is just
+`java.util.regex.Matcher`, so it surfaces as a nonsense error message. Do the matching inside a
+`@com.cloudbees.groovy.cps.NonCPS` helper that returns a String (see `_suggestedModuleId()`),
+never `def m = text =~ /../` followed by a step. This silently disabled the Android JDK
+auto-install: the versioned module ID parsed fine, then the install threw on serialization.
+
 ### Sandbox Restrictions
 
 `Integer.toHexString()` and `Integer.toString(n, 16)` are **BLOCKED** — use `Math.abs()` with decimal instead. Check Jenkins script approval page if methods are blocked.
