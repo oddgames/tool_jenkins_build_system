@@ -4227,6 +4227,21 @@ def verifyAndroidNdk(String playbackEngines) {
 }
 
 /**
+ * Extract the versioned module ID from Unity Hub's "Did you mean: android-open-jdk-17.0.18+8".
+ *
+ * @NonCPS so the java.util.regex.Matcher never lives in CPS scope. Holding one in a local
+ * across a pipeline step throws NotSerializableException, whose getMessage() is the bare class
+ * name - that is the "install failed: java.util.regex.Matcher" the JDK auto-install reported
+ * instead of installing anything.
+ */
+@com.cloudbees.groovy.cps.NonCPS
+private String _suggestedModuleId(String output, String prefix) {
+    if (!output) return null
+    def m = (output =~ /(?i)(${prefix}[\w.+\-]+)/)
+    return m.find() ? m.group(1) : null
+}
+
+/**
  * Verify Android OpenJDK is present in the Unity installation.
  * The 'android' module with -cm should install it, but Unity 6 renamed the sub-module
  * (e.g. 'android-open-jdk-17.0.9+9') so it sometimes gets skipped.
@@ -4272,15 +4287,16 @@ def verifyAndroidJdk(String playbackEngines) {
 
     // Check if Hub suggested the real module name (Unity 6 versioned IDs)
     if (output.contains('Did you mean') || output.contains("Couldn't find module")) {
-        def matcher = output =~ /(?i)(android-open-jdk[\w.+\-]+)/
-        if (matcher.find()) {
-            def realModuleId = matcher.group(1)
+        def realModuleId = _suggestedModuleId(output, 'android-open-jdk')
+        if (realModuleId) {
             echo "[INFO] Hub suggested correct module ID: ${realModuleId}"
             try {
                 installUnityModules(env.UNITY_VERSION, [realModuleId])
             } catch (Exception e) {
                 echo "[WARN] ${realModuleId} install failed: ${e.message}"
             }
+        } else {
+            echo "[WARN] Hub rejected the module name but suggested no replacement"
         }
     }
 
