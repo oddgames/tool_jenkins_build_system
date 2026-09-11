@@ -287,11 +287,110 @@ def getRequiredUnityModules(String platform) {
 }
 
 /**
+ * Resolve the install directory of a Unity version.
+ *
+ * Hub does not always use the plain /Applications/Unity/Hub/Editor/<version> folder: when that
+ * folder is already taken it installs beside it with an architecture suffix
+ * (<version>-arm64 / <version>-x86_64). That is exactly what happens when installUnityModules()
+ * falls back to a full `install` because Hub lost track of the copy at the plain path - the new
+ * copy (the one with the modules) lands at <version>-arm64 while every hardcoded path still points
+ * at the old one, so the modules "stay missing" and the build fails. When several copies are on
+ * disk the one Hub lists in `editors -i` wins, because that is the copy install-modules writes to.
+ *
+ * Cached in env.UNITY_INSTALL_DIR for the version - pass refresh=true after an install.
+ * Returns the plain path when nothing is installed; callers check for the binary themselves.
+ */
+def getUnityInstallDir(String version, boolean refresh = false) {
+    if (!refresh && env.UNITY_INSTALL_DIR && env.UNITY_INSTALL_DIR_VERSION == version) {
+        return env.UNITY_INSTALL_DIR
+    }
+    def root = '/Applications/Unity/Hub/Editor'
+    def plain = "${root}/${version}".toString()
+    // Every <version> / <version>-<suffix> folder that actually holds an editor binary
+    def listing = sh(script: "ls -d '${plain}'*/Unity.app/Contents/MacOS/Unity 2>/dev/null || true", returnStdout: true).trim()
+    def onDisk = _editorDirsForVersion(listing, version)
+
+    def chosen = plain
+    if (onDisk.size() == 1) {
+        chosen = onDisk[0]
+    } else if (onDisk.size() > 1) {
+        echo "[WARN] Unity ${version} is installed more than once: ${onDisk.join(', ')} - asking Hub which copy it tracks"
+        def hubDir = _hubTrackedEditorDir(version)
+        if (hubDir && onDisk.contains(hubDir)) {
+            chosen = hubDir
+        } else {
+            chosen = onDisk[0]
+            echo "[WARN] Hub lists none of them (reported: ${hubDir ?: 'nothing'}) - using ${chosen}"
+        }
+    }
+    if (chosen != plain) {
+        echo "[INFO] Unity ${version} resolved to ${chosen}"
+    }
+    env.UNITY_INSTALL_DIR = chosen
+    env.UNITY_INSTALL_DIR_VERSION = version
+    return chosen
+}
+
+/** Editor dirs from the `ls -d` listing of <root>/<version>{,-<suffix>}/Unity.app/Contents/MacOS/Unity - exact version or version-<suffix> only. */
+@com.cloudbees.groovy.cps.NonCPS
+private List _editorDirsForVersion(String listing, String version) {
+    def dirs = []
+    if (!listing) return dirs
+    for (String line : listing.split('\n')) {
+        def path = line.trim()
+        def idx = path.indexOf('/Unity.app/Contents/MacOS/Unity')
+        if (idx < 0) continue
+        def dir = path.substring(0, idx)
+        def name = dir.substring(dir.lastIndexOf('/') + 1)
+        if (name == version || name.startsWith("${version}-")) dirs << dir
+    }
+    return dirs
+}
+
+/**
+ * Directory Hub reports for a version in `editors -i`, or null when Hub doesn't list it.
+ * Prefers the entry for this machine's architecture when both Intel and Apple silicon copies exist.
+ */
+private def _hubTrackedEditorDir(String version) {
+    def hub = env.UNITY_HUB_PATH ?: '/Applications/Unity Hub.app/Contents/MacOS/Unity Hub'
+    def hubExists = sh(script: "[ -f '${hub}' ] && echo found || echo notfound", returnStdout: true).trim()
+    if (hubExists != 'found') return null
+    def arch = sh(script: 'uname -m', returnStdout: true).trim()
+    def output = sh(script: "\"${hub}\" -- --headless editors -i 2>&1 || true", returnStdout: true).trim()
+    return _parseHubEditorDir(output, version, arch)
+}
+
+/**
+ * Parse `editors -i` output, e.g.
+ *   6000.0.83f1 (Apple silicon) installed at /Applications/Unity/Hub/Editor/6000.0.83f1-arm64/Unity.app
+ * into the editor's install dir. @NonCPS: plain string ops only, no Matcher in CPS scope.
+ */
+@com.cloudbees.groovy.cps.NonCPS
+private String _parseHubEditorDir(String output, String version, String arch) {
+    if (!output) return null
+    def archLabel = arch == 'arm64' ? 'Apple silicon' : 'Intel'
+    def marker = ' installed at '
+    def matches = []
+    for (String line : output.split('\n')) {
+        def l = line.trim()
+        if (!l.startsWith("${version} ")) continue
+        def idx = l.indexOf(marker)
+        if (idx < 0) continue
+        def path = l.substring(idx + marker.length()).trim()
+        if (path.endsWith('/Unity.app')) path = path.substring(0, path.length() - '/Unity.app'.length())
+        matches << [line: l, dir: path]
+    }
+    if (!matches) return null
+    def preferred = matches.find { it.line.contains(archLabel) }
+    return (preferred ?: matches[0]).dir
+}
+
+/**
  * Get the PlaybackEngines base path for a Unity version.
  * Unity 6+ (6000.x) uses Editor/Data/PlaybackEngines/, older versions use PlaybackEngines/ directly.
  */
 def getPlaybackEnginesPath(String version) {
-    def basePath = "/Applications/Unity/Hub/Editor/${version}"
+    def basePath = getUnityInstallDir(version)
     // Unity 6+ layout: Editor/Data/PlaybackEngines
     def newPath = "${basePath}/Editor/Data/PlaybackEngines"
     def exists = sh(script: "[ -d '${newPath}' ] && echo found || echo notfound", returnStdout: true).trim()
@@ -468,7 +567,7 @@ def installUnityHub() {
  * When auto-installing and modules are provided, installs editor + modules in one Hub command.
  */
 def checkUnity(String version, boolean autoInstall = false, List modules = []) {
-    def unityPath = "/Applications/Unity/Hub/Editor/${version}/Unity.app/Contents/MacOS/Unity"
+    def unityPath = "${getUnityInstallDir(version, true)}/Unity.app/Contents/MacOS/Unity"
     echo "[INFO] Checking for Unity at: ${unityPath}"
     def exists = sh(script: "[ -f '${unityPath}' ] && echo found || echo notfound", returnStdout: true).trim()
 
@@ -547,7 +646,7 @@ def installUnity(String version, List modules = []) {
     }
 
     try {
-        def unityPath = "/Applications/Unity/Hub/Editor/${version}/Unity.app/Contents/MacOS/Unity"
+        def unityPath = "${installDir}/Unity.app/Contents/MacOS/Unity"
         def moduleArgs = modules ? modules.collect { "-m ${it}" }.join(' ') + ' -cm' : ''
         def cmd = "\"${env.UNITY_HUB_PATH}\" -- --headless install --version ${version} ${changesetArg} -a ${arch} ${moduleArgs}"
 
@@ -583,7 +682,9 @@ def installUnity(String version, List modules = []) {
             sh script: "pkill -f 'Unity Hub' 2>/dev/null || true"
 
             // Verify the binary exists on disk — this is the source of truth,
-            // not the Hub's exit code or output
+            // not the Hub's exit code or output. Re-resolve the dir: Hub may have installed
+            // to <version>-arm64 rather than the plain folder.
+            unityPath = "${getUnityInstallDir(version, true)}/Unity.app/Contents/MacOS/Unity"
             def exists = sh(script: "[ -f '${unityPath}' ] && echo found || echo notfound", returnStdout: true).trim()
             if (exists == 'found') {
                 echo "[OK] Unity ${version} installed at ${unityPath}"
@@ -720,7 +821,7 @@ def installUnityModules(String version, List modules) {
         logInstalledEditors()
 
         def installRoot = '/Applications/Unity/Hub/Editor'
-        def unityBin = "${installRoot}/${version}/Unity.app/Contents/MacOS/Unity"
+        def unityBin = "${getUnityInstallDir(version)}/Unity.app/Contents/MacOS/Unity"
         def onDisk = sh(script: "[ -f '${unityBin}' ] && echo found || echo notfound", returnStdout: true).trim()
         if (onDisk == 'found') {
             echo "[INFO] Unity ${version} IS on disk — pointing Hub at ${installRoot} and retrying install-modules"
@@ -740,6 +841,9 @@ def installUnityModules(String version, List modules) {
     }
 
     // Still not tracked: install the editor with -m flags, which registers it and adds the modules.
+    // Hub won't reuse the untracked copy at the plain folder - it downloads a fresh editor next to
+    // it as <version>-arm64. getUnityInstallDir() picks that copy up afterwards (Hub tracks it, so
+    // it is where the modules are); the old copy is left alone and can be deleted by hand.
     if (_hubLostEditor(output)) {
         echo "[WARN] Hub still doesn't track this editor — trying install command to re-register and add modules..."
         sh script: "pkill -f 'Unity Hub' 2>/dev/null || true"
@@ -763,6 +867,8 @@ def installUnityModules(String version, List modules) {
     // Verify modules are actually present by checking marker directories.
     // This is the source of truth - Unity Hub may return errors even when modules are already installed
     // (e.g. "Validation Failed" when another build has a file lock on the module directory).
+    // Re-resolve the editor dir first: the install fallback above may have created <version>-arm64.
+    getUnityInstallDir(version, true)
     def playbackEngines = getPlaybackEnginesPath(version)
     def moduleMarkers = [
         'ios': 'iOSSupport/Trampoline',
@@ -2630,7 +2736,7 @@ fi
         def toolDir = toolPath.contains('/') ? toolPath.substring(0, toolPath.lastIndexOf('/')) : toolPath
         def stagedDir = "${env.WORKSPACE}/temp_unity_data_tool"
         def stagedToolPath = "${stagedDir}/UnityDataTool"
-        def editorApiDylib = "/Applications/Unity/Hub/Editor/${env.UNITY_VERSION}/Unity.app/Contents/Tools/UnityFileSystemApi.dylib"
+        def editorApiDylib = "${getUnityInstallDir(env.UNITY_VERSION)}/Unity.app/Contents/Tools/UnityFileSystemApi.dylib"
 
         echo "[INFO] Analyzing: ${analyzeDir}"
         sh """#!/bin/bash
@@ -2826,7 +2932,7 @@ def preflightUnityLicense() {
         error "[ERROR] Cannot activate Unity license: UNITY_VERSION not set. Run extractUnityVersion() first."
     }
 
-    def unityExe = "/Applications/Unity/Hub/Editor/${env.UNITY_VERSION}/Unity.app/Contents/MacOS/Unity"
+    def unityExe = "${getUnityInstallDir(env.UNITY_VERSION)}/Unity.app/Contents/MacOS/Unity"
     def exeExists = sh(script: "test -f '${unityExe}' && echo found || echo missing", returnStdout: true).trim()
     if (exeExists != 'found') {
         error "[ERROR] Unity editor not found at ${unityExe}. Run validateUnityInstallation() first."
@@ -2901,7 +3007,7 @@ def validateUnityInstallation() {
     // Verify Unity is running natively (not under Rosetta on Apple Silicon)
     def machineArch = sh(script: "uname -m", returnStdout: true).trim()
     if (machineArch == 'arm64') {
-        def unityBinary = "/Applications/Unity/Hub/Editor/${env.UNITY_VERSION}/Unity.app/Contents/MacOS/Unity"
+        def unityBinary = "${getUnityInstallDir(env.UNITY_VERSION)}/Unity.app/Contents/MacOS/Unity"
         def binaryArchs = sh(script: "lipo -archs '${unityBinary}' || echo unknown", returnStdout: true).trim()
         if (binaryArchs.contains('arm64')) {
             echo "[OK] Unity binary is ARM64-native on Apple Silicon"
@@ -2988,7 +3094,7 @@ def validateUnityInstallation() {
 def verifyIl2cppSupport(String playbackEngines) {
     echo "[INFO] Verifying IL2CPP support for ${env.PLATFORM} (BUILD_TYPE: ${env.BUILD_TYPE ?: 'unset'})..."
 
-    def unityBase = "/Applications/Unity/Hub/Editor/${env.UNITY_VERSION}"
+    def unityBase = getUnityInstallDir(env.UNITY_VERSION)
     def il2cppPaths = [
         "${unityBase}/Unity.app/Contents/il2cpp",
         "${unityBase}/Editor/Data/il2cpp"
@@ -3602,7 +3708,7 @@ def runUnityCommand(Map config) {
 
     def cacheServerFlags = env.CACHE_SERVER_ENDPOINT ? "-EnableCacheServer -cacheServerEndpoint ${env.CACHE_SERVER_ENDPOINT}" : ''
 
-    def unityExe = "/Applications/Unity/Hub/Editor/\${UNITY_VERSION}/Unity.app/Contents/MacOS/Unity"
+    def unityExe = "${getUnityInstallDir(env.UNITY_VERSION)}/Unity.app/Contents/MacOS/Unity"
     def unityArgs = "-projectPath '${unityProjectPath}' ${cacheServerFlags} -batchmode -username \"\$UNITY_USERNAME\" -password \"\$UNITY_PASSWORD\" -buildTarget ${platform} ${quitFlag} ${importWorkersFlag} -executeMethod ${executeMethod} -logFile - -skipMissingProjectID -skipMissingUPID -accept-apiupdate -disable-assembly-updater"
 
     def exitCode = sh(script: """
@@ -3692,11 +3798,12 @@ def runUnityTests(Map config) {
 
     def filterArg = testFilter ? "-testFilter \\\"${testFilter}\\\"" : ''
     def categoryArg = testCategory ? "-testCategory \\\"${testCategory}\\\"" : ''
+    def unityExe = "${getUnityInstallDir(env.UNITY_VERSION)}/Unity.app/Contents/MacOS/Unity"
 
     sh """
         mkdir -p "${env.ARTIFACT_PATH}"
         echo "[INFO] Running Unity ${testPlatform} tests (target: ${buildTarget})"
-        /Applications/Unity/Hub/Editor/\${UNITY_VERSION}/Unity.app/Contents/MacOS/Unity \\
+        ${unityExe} \\
             -projectPath "${unityProjectPath}" \\
             -batchmode \\
             -buildTarget ${buildTarget} \\

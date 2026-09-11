@@ -150,6 +150,7 @@ Use **specific version IDs**, not bare prefix names:
 - Build agents: `C:\UnityEditors\` — Dev PC: `C:\Program Files\Unity\Hub\Editor\`
 - Commands: `editors`, `install-path`, `install`, `install-modules` — NO `details`, `list`, or `modules` command
 - **Unity 6 module IDs are versioned** (e.g. `android-open-jdk-17.0.9+9`), but `--headless help` still shows the old names (`android-open-jdk`). There is no command to query the real versioned IDs — the only way to discover them is from the "Did you mean" error when using the old name. `verifyAndroidJdk()` handles this automatically.
+- **macOS: Hub may install to `<version>-arm64`, not `<version>`.** When `/Applications/Unity/Hub/Editor/<version>` is already taken (e.g. by a copy Hub doesn't track — the case where `installUnityModules()` falls back to a full `install`), Hub puts the new editor beside it with an arch suffix, and `editors -i` reports `installed at .../<version>-arm64/Unity.app`. Never hardcode the editor path in `macos.groovy` — go through `getUnityInstallDir(version)` (cached in `env.UNITY_INSTALL_DIR`; when several copies exist it asks Hub which one it tracks, since that is where modules land). The stale untracked copy is left on disk; delete it by hand.
 
 ## Key Fixes Reference
 
