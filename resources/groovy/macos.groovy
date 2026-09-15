@@ -4799,6 +4799,52 @@ def uploadCrashlyticsSymbols(Map config) {
 }
 
 /**
+ * Upload the archive's dSYM symbol tables to Bugpunch. Runs the SDK's own
+ * Tools/upload-ios-symbols.sh (resolved from the Unity project's package cache) in standalone
+ * mode against output.xcarchive, with the project key + server read from
+ * Assets/Resources/BugpunchConfig.asset. Best-effort: a failure marks the build UNSTABLE, never
+ * failed, but it is never silent — the script prints a warning for every slice it could not ship
+ * and re-checks the server for the UnityFramework table.
+ *
+ * config.unityProject  Unity project dir (default env.UNITY_PROJECT)
+ * config.archivePath   the .xcarchive (default ${XCODE_BASE_PATH}/output.xcarchive)
+ */
+def uploadBugpunchSymbols(Map config) {
+    def unityProject = config.unityProject ?: env.UNITY_PROJECT
+    def archivePath  = config.archivePath ?: "${env.XCODE_BASE_PATH}/output.xcarchive"
+
+    echo "[INFO] Uploading dSYM symbol tables to Bugpunch"
+    echo "[INFO] Archive: ${archivePath}"
+
+    def rc = sh(returnStatus: true, script: """
+        set -u
+        CONFIG="${unityProject}/Assets/Resources/BugpunchConfig.asset"
+        if [ ! -f "\$CONFIG" ]; then echo "[WARN] \$CONFIG not found — Bugpunch symbol upload skipped"; exit 2; fi
+        API_KEY=\$(sed -nE 's/^ *apiKey: *([^ ]+).*//p' "\$CONFIG" | head -1)
+        SERVER=\$(sed -nE 's/^ *serverUrl: *([^ ]+).*//p' "\$CONFIG" | head -1)
+        SERVER=\${SERVER:-https://bugpunch.com}
+        if [ -z "\$API_KEY" ]; then echo "[WARN] no apiKey in BugpunchConfig.asset — Bugpunch symbol upload skipped"; exit 2; fi
+
+        SCRIPT=\$(ls -t "${unityProject}"/Library/PackageCache/au.com.oddgames.bugpunch@*/Tools/upload-ios-symbols.sh 2>/dev/null | head -1)
+        [ -n "\$SCRIPT" ] || SCRIPT=\$(ls "${unityProject}"/Packages/au.com.oddgames.bugpunch/Tools/upload-ios-symbols.sh 2>/dev/null | head -1)
+        if [ -z "\$SCRIPT" ]; then echo "[WARN] Bugpunch package Tools/upload-ios-symbols.sh not found — SDK too old for the pipeline upload"; exit 2; fi
+        if [ ! -d "${archivePath}" ]; then echo "[WARN] archive not found at ${archivePath}"; exit 2; fi
+
+        echo "[INFO] using \$SCRIPT"
+        BUGPUNCH_SERVER_URL="\$SERVER" BUGPUNCH_API_KEY="\$API_KEY" /bin/bash "\$SCRIPT" "${archivePath}"
+    """)
+
+    if (rc != 0) {
+        echo "[WARN] Bugpunch symbol upload finished with exit ${rc} — iOS crashes on this build may not symbolicate"
+        if (ensureCommon()) {
+            common.setUnstable("Bugpunch symbol upload incomplete (exit ${rc})")
+        }
+    } else {
+        echo "[OK] Bugpunch symbols uploaded"
+    }
+}
+
+/**
  * Upload iOS dSYM files to Crashlytics
  *
  * Searches buildPath recursively for *.dSYM bundles and uploads them
