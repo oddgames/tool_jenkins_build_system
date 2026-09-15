@@ -380,6 +380,9 @@ def init(Map config = [:]) {
         env.PREFLIGHT_VERSION = platform.PREFLIGHT_VERSION
         common.platformModule = platform
 
+        // The Validate stage marks itself before calling init() - show it now that badges are possible
+        if (env.CURRENT_STAGE) common.setCurrentStage(env.CURRENT_STAGE)
+
         // Capture agent name early so it's available even if the build fails before printBuildInfo()
         if (!env.BUILD_NODE) {
             env.BUILD_NODE = env.NODE_NAME
@@ -501,6 +504,18 @@ def addBranchBadge() { common.addBranchBadge() }
 def addBuildBadges(String buildType) { common.addBuildBadges(buildType) }
 def addFailureBadge(String stageName) { common.addFailureBadge(stageName) }
 def updateBadgesForResult(String result = null) { common.updateBadgesForResult(result) }
+// Live status badge (build-history sidebar): setCurrentStage replaces `env.CURRENT_STAGE = '...'` in stages
+// Called before init() in the Validate stage: record the stage only - init() paints the badge once common is loaded.
+// (Must not ensureInitialized() here: that would swallow the later init(buildType:, branch:) call and its badges.)
+def setCurrentStage(String name) {
+    env.CURRENT_STAGE = name
+    if (common != null) common.setCurrentStage(name)
+}
+def setStatusBadge(String label, String message, String state = 'RUNNING') { common.setStatusBadge(label, message, state) }
+def clearStatusBadge() { common.clearStatusBadge() }
+def refreshUploadStatusBadge() { common.refreshUploadStatusBadge() }
+def addLocalArtifactLinks(String uncFolder, String fileName) { common.addLocalArtifactLinks(uncFolder, fileName) }
+def addDriveArtifactBadge(String badgeId, String link) { common.addDriveArtifactBadge(badgeId, link) }
 def preflightJenkinsPermissions() { common.preflightJenkinsPermissions() }
 def addSidebarLink(String url, String title, String iconUrl) { common.addSidebarLink(url, title, iconUrl) }
 def addGoogleDriveLinks(String folderLink, String fileLink, String fileType) { common.addGoogleDriveLinks(folderLink, fileLink, fileType) }

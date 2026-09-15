@@ -60,7 +60,7 @@ pipeline {
         stage('Validate') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Validate'
+                    buildUtils.setCurrentStage('Validate')
                     def testBuildType = params.TEST_PLATFORM == 'PlayMode' ? 'PlayTest' : 'EditorTest'
                     buildUtils.init(buildType: testBuildType, branch: params.BRANCH)
 
@@ -85,7 +85,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Checkout'
+                    buildUtils.setCurrentStage('Checkout')
 
                     buildUtils.preflightPlasticSCM()
 
@@ -111,7 +111,7 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
                     script {
-                        env.CURRENT_STAGE = 'Startup'
+                        buildUtils.setCurrentStage('Startup')
                         buildUtils.copyPipelineScripts()
                         buildUtils.startup(env.BUILD_TYPE, env.BRANCH)
                     }
@@ -122,7 +122,7 @@ pipeline {
         stage('Extract Version') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Extract Version'
+                    buildUtils.setCurrentStage('Extract Version')
                     buildUtils.extractUnityVersion(env.UNITY_PROJECT)
                 }
             }
@@ -136,7 +136,7 @@ pipeline {
             }
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Preflight: Unity'
+                    buildUtils.setCurrentStage('Preflight: Unity')
                     buildUtils.validateUnityInstallation()
                 }
             }
@@ -152,7 +152,7 @@ pipeline {
                 stage('Network') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: Network'
+                            buildUtils.setCurrentStage('Preflight: Network')
                             buildUtils.preflightNetwork()
                         }
                     }
@@ -161,7 +161,7 @@ pipeline {
                 stage('Jenkins Permissions') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: Jenkins Permissions'
+                            buildUtils.setCurrentStage('Preflight: Jenkins Permissions')
                             buildUtils.preflightJenkinsPermissions()
                         }
                     }
@@ -170,7 +170,7 @@ pipeline {
                 stage('PlasticSCM') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: PlasticSCM'
+                            buildUtils.setCurrentStage('Preflight: PlasticSCM')
                             buildUtils.preflightPlasticSCM()
                         }
                     }
@@ -179,7 +179,7 @@ pipeline {
                 stage('Ruby') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: Ruby'
+                            buildUtils.setCurrentStage('Preflight: Ruby')
                             buildUtils.preflightRuby()
                         }
                     }
@@ -197,7 +197,7 @@ pipeline {
         stage('Unity License') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Unity License'
+                    buildUtils.setCurrentStage('Unity License')
                     buildUtils.preflightUnityLicense()
                 }
             }
@@ -212,7 +212,7 @@ pipeline {
                     }
                     steps {
                         script {
-                            env.CURRENT_STAGE = "Steam ${params.TEST_PLATFORM} Tests"
+                            buildUtils.setCurrentStage("Steam ${params.TEST_PLATFORM} Tests")
                             echo "========================================="
                             echo "Steam ${params.TEST_PLATFORM} Tests"
                             echo "Build Target: StandaloneWindows64"
@@ -240,7 +240,7 @@ pipeline {
                     }
                     steps {
                         script {
-                            env.CURRENT_STAGE = "Android ${params.TEST_PLATFORM} Tests"
+                            buildUtils.setCurrentStage("Android ${params.TEST_PLATFORM} Tests")
                             echo "========================================="
                             echo "Android ${params.TEST_PLATFORM} Tests"
                             echo "Build Target: Android"
@@ -268,7 +268,7 @@ pipeline {
                     }
                     steps {
                         script {
-                            env.CURRENT_STAGE = "Amazon ${params.TEST_PLATFORM} Tests"
+                            buildUtils.setCurrentStage("Amazon ${params.TEST_PLATFORM} Tests")
                             echo "========================================="
                             echo "Amazon ${params.TEST_PLATFORM} Tests"
                             echo "Build Target: Android (Amazon)"
@@ -299,7 +299,7 @@ pipeline {
                     }
                     steps {
                         script {
-                            env.CURRENT_STAGE = "iOS ${params.TEST_PLATFORM} Tests"
+                            buildUtils.setCurrentStage("iOS ${params.TEST_PLATFORM} Tests")
                             echo "========================================="
                             echo "iOS ${params.TEST_PLATFORM} Tests"
                             echo "Build Target: iOS"

@@ -6288,7 +6288,7 @@ for %%f in (*.apk *.aab *.ipa *.nsp) do (
     if (fileLink) {
         echo "[OK] GDrive file link: ${fileLink}"
         def badgeText = fileName.substring(fileName.lastIndexOf('.') + 1)
-        common.addShieldsBadge(badgeText, badgeText, 'brightgreen', fileLink)
+        common.addDriveArtifactBadge(badgeText, fileLink)
         env.GDRIVE_FILE_LINK = fileLink
     } else {
         echo "[WARN] No GDrive file link generated - sidebar download link will be missing"
@@ -6303,7 +6303,7 @@ for %%f in (*.apk *.aab *.ipa *.nsp) do (
 
     // Switch builds may only have .nspd directories (no single .nsp file)
     if (!fileName && env.PLATFORM == 'Switch' && gdriveFolderLink) {
-        common.addShieldsBadge('nspd', 'nspd', 'brightgreen', gdriveFolderLink)
+        common.addDriveArtifactBadge('nspd', gdriveFolderLink)
     }
 
     def fileType = fileName ? fileName.substring(fileName.lastIndexOf('.') + 1).toUpperCase() : 'APK'
@@ -6400,10 +6400,10 @@ for %%f in (${packageGlobs}) do (
     if (fileLink) {
         fileType = fileName.substring(fileName.lastIndexOf('.') + 1).toUpperCase()
         echo "[OK] GDrive package link: ${fileLink}"
-        common.addShieldsBadge(fileType.toLowerCase(), fileType.toLowerCase(), 'brightgreen', fileLink)
+        common.addDriveArtifactBadge(fileType.toLowerCase(), fileLink)
         env.GDRIVE_FILE_LINK = fileLink
     } else if (folderLink) {
-        common.addShieldsBadge('build', 'build', 'brightgreen', folderLink)
+        common.addDriveArtifactBadge('build', folderLink)
     }
 
     common.addGoogleDriveLinks(folderLink, fileLink, fileType, null)
@@ -6471,6 +6471,22 @@ def uploadToLocalShare(Map config) {
         echo [INFO] Local share copy complete
         exit /b 0
     """
+
+    // Orange artifact badge + "Download <TYPE> (Local)" link to the copy that just landed, so the
+    // build is grabbable while the Drive upload (which turns the badge green) is still running.
+    // Same first-match order as uploadToGoogleDrive() / uploadFolderToGoogleDrive(), so the badge
+    // ids line up; a Switch .nspd folder or a loose folder (Steam) links the folder itself.
+    def fileName = bat(script: """@echo off
+cd /d "${buildPath}"
+for %%f in (*.apk *.aab *.ipa *.nsp *.xvc *.msixvc *.pkg) do (
+    echo %%f
+    goto :eof
+)
+for /d %%d in (*.nspd) do (
+    echo %%d
+    goto :eof
+)""", returnStdout: true).trim()
+    common.addLocalArtifactLinks(destPath, fileName ?: null)
 
     common.updateUploadStatus('local', 'done')
 }

@@ -199,6 +199,28 @@ local share, submit manually through the platform portal. No automated store upl
 - Retries: `common.classifySteamFailure()` splits transient failures (connection drops, `Timeout`/`Busy` EResults — retried) from rejections (retried never). Retrying a rejection is pure waste: every attempt re-scans the content root **and creates another duplicate build on Steamworks**.
 - On failure the pipeline dumps the tail of SteamCMD's own `logs/content_log.txt` (the real reason; the console only says `Failure`) and, when a branch is suspected, lists the app's actual branches via `getSteamBranches()` (app info calls the default branch `public`).
 
+## Build Badges: Live Status + Local Artifact Links
+
+The build-history sidebar only renders badges and the description, so badges are the only way a
+running build can say what it's doing there. Colours (`resultBadgeColor()` in `common.groovy`):
+blue = running, **orange = built but not yet uploaded**, green/yellow/red/grey = Jenkins result.
+
+- **Every stage starts with `buildUtils.setCurrentStage('Name')`** — never assign `env.CURRENT_STAGE`
+  directly. It records the stage for failure reporting *and* updates the `status` badge
+  (`stage | Name`, blue). Before `init()` it only records; `init()` paints the badge.
+- `sendUploadNotification()` flips the badge to `uploading | Local, GDrive, TestFlight` (orange);
+  `updateUploadStatus()` refreshes it as targets finish (`upload failed | X` red, `uploads | done`
+  green). Post-build stages running in parallel with uploads don't overwrite it.
+  `updateBadgesForResult()` (from `finalizeBuild()`) removes it. Warm-up builds get no status badge.
+- **Local share = first download link.** `uploadToLocalShare()` (both platforms) calls
+  `common.addLocalArtifactLinks()` once the copy lands: orange `ipa`/`apk`/`aab`/`nsp`/`nspd`/`build`
+  badge + `Download IPA (Local)` sidebar link to the `file://` path, minutes before Google Drive
+  finishes. The Drive upload adds its green badge via `common.addDriveArtifactBadge()` with the
+  **same badge id** (the extension), which replaces the orange one. Jobs with no Drive upload
+  (Steam) get the local badge re-coloured green when every upload has finished.
+- `file://` links are blocked by browsers when clicked from an http page (existing "Local Build"
+  link has the same limitation) — right-click → copy link, or use a local-links extension.
+
 ## Firebase Crashlytics Symbol Upload
 
 1. Set `UPLOAD_CRASHLYTICS_SYMBOLS=true` in Jenkins job config

@@ -178,9 +178,17 @@ def addShieldsDoubleBadge(String id, label, message, labelColor = null, messageC
     addBadge(text: badgeHtml, id: id)
 }
 
+/**
+ * Badge colour per build state. Besides the Jenkins results there are two in-flight states:
+ *   RUNNING   blue    - a stage is executing
+ *   UPLOADING orange  - the artifact is built and on the local share, uploads still running.
+ *                       Distinct from blue/green so the build list shows "you can grab the file
+ *                       now" while a slow Google Drive / store upload is still going.
+ */
 private String resultBadgeColor(String result = null) {
     def status = result ?: currentBuild.result ?: currentBuild.currentResult ?: 'SUCCESS'
-    return [SUCCESS: 'brightgreen', UNSTABLE: 'yellow', FAILURE: 'red', ABORTED: 'lightgrey'][status] ?: 'blue'
+    return [SUCCESS: 'brightgreen', UNSTABLE: 'yellow', FAILURE: 'red', ABORTED: 'lightgrey',
+            UPLOADING: 'orange', RUNNING: 'blue'][status] ?: 'blue'
 }
 
 def addPlatformBadge(String color = null) {
@@ -223,6 +231,123 @@ def updateBadgesForResult(String result = null) {
     if (env.BUILD_TYPE) addBuildTypeBadge(env.BUILD_TYPE, color)
     if (env.PLASTICSCM_CHANGESET_ID) addBranchBadge(color)
     if (status == 'FAILURE' && env.FAILED_STAGE) addFailureBadge(env.FAILED_STAGE)
+    // The build is over - the result colours say what happened, the live status badge would only mislead.
+    clearStatusBadge()
+}
+
+// ----------------------------------------------------------------------------
+// Live status badge - what the build is doing right now.
+//
+// The build-history sidebar only renders badges and the description, so this is the one place
+// a running build can say "Xcode Archive" or "uploading GDrive" at a glance. One badge, id
+// 'status', replaced on every update and removed by updateBadgesForResult() when the build ends.
+// Skipped for warm-up builds (nothing to report, and their post block doesn't finalize).
+// ----------------------------------------------------------------------------
+
+def setStatusBadge(String label, String message, String state = 'RUNNING') {
+    if (env.WARMUP == 'true') return
+    try {
+        addShieldsDoubleBadge('status', label, message, '555555', resultBadgeColor(state))
+    } catch (Exception e) {
+        echo "[WARN] Could not update status badge: ${e.message}"
+    }
+}
+
+def clearStatusBadge() {
+    try {
+        removeBadges(id: 'status')
+    } catch (Exception e) {
+        echo "[WARN] Could not remove status badge: ${e.message}"
+    }
+}
+
+/** True once sendUploadNotification() has registered the upload targets for this build. */
+private boolean inUploadPhase() {
+    return (env.UPLOAD_GDRIVE_STATUS || env.UPLOAD_LOCAL_STATUS || env.UPLOAD_STORE_STATUS) as boolean
+}
+
+/**
+ * Record the running stage (failure reporting reads env.CURRENT_STAGE) and show it on the
+ * status badge. Replaces the bare `env.CURRENT_STAGE = '...'` at the top of every stage.
+ * Once uploads have started the badge tracks them instead (refreshUploadStatusBadge), so the
+ * post-build stages that run alongside the uploads don't overwrite "uploading ...".
+ */
+def setCurrentStage(String name) {
+    env.CURRENT_STAGE = name
+    if (!inUploadPhase()) setStatusBadge('stage', name)
+}
+
+/**
+ * Status badge for the upload phase, refreshed whenever an upload target changes state:
+ *   uploading | GDrive, TestFlight   orange  - still running
+ *   upload failed | GDrive           red     - nothing pending, at least one failed
+ *   uploads | done                   green   - everything landed
+ * When everything has landed and Google Drive didn't replace the local artifact badge (jobs with
+ * no Drive upload, e.g. Steam), the orange local badge is re-coloured green - orange means
+ * "not uploaded yet", and by then it is.
+ */
+def refreshUploadStatusBadge() {
+    def names = [gdrive: 'GDrive', local: 'Local', store: env.UPLOAD_STORE_NAME ?: 'Store']
+    def states = [gdrive: env.UPLOAD_GDRIVE_STATUS, local: env.UPLOAD_LOCAL_STATUS, store: env.UPLOAD_STORE_STATUS]
+    def pending = []
+    def failed = []
+    for (String key : ['local', 'gdrive', 'store']) {
+        if (states[key] == 'pending') pending << names[key]
+        else if (states[key] == 'failed') failed << names[key]
+    }
+    if (pending) {
+        setStatusBadge('uploading', pending.join(', '), 'UPLOADING')
+    } else if (failed) {
+        setStatusBadge('upload failed', failed.join(', '), 'FAILURE')
+    } else {
+        setStatusBadge('uploads', 'done', 'SUCCESS')
+        if (env.LOCAL_ARTIFACT_BADGE_ID && env.GDRIVE_ARTIFACT_BADGE != 'true') {
+            addShieldsBadge(env.LOCAL_ARTIFACT_BADGE_ID, env.LOCAL_ARTIFACT_BADGE_ID, resultBadgeColor('SUCCESS'), env.LOCAL_ARTIFACT_URL)
+        }
+    }
+}
+
+/**
+ * Artifact badge + sidebar link for the copy on the local share. Added the moment the local
+ * copy lands, so people can grab the build while the (slow) Google Drive upload is still
+ * running - the same badge + "Download <TYPE>" pair the Drive upload adds, but orange and
+ * pointing at the file:// path. The badge id is the file extension, exactly what
+ * uploadToGoogleDrive() uses, so its brightgreen Drive badge replaces this one on completion.
+ *
+ * @param uncFolder  share folder holding the copy, e.g. \\odd-jenkins\builds\Job\Debug\1.2.3
+ * @param fileName   the installable at the top of that folder (apk/aab/ipa/nsp/xvc/msixvc/pkg),
+ *                   a .nspd folder name, or null when the build is a loose folder (Steam)
+ */
+def addLocalArtifactLinks(String uncFolder, String fileName) {
+    if (!uncFolder) return
+    def folderUrl = "file:${uncFolder.replace('\\', '/')}".replace(' ', '%20')
+    def badgeId
+    def url
+    if (fileName && !fileName.toLowerCase().endsWith('.nspd')) {
+        badgeId = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
+        url = "${folderUrl}/${fileName.replace(' ', '%20')}"
+        addSidebarLink(url, "Download ${badgeId.toUpperCase()} (Local)", 'https://img.icons8.com/fluency/48/folder-invoices--v1.png')
+    } else {
+        // Switch .nspd and loose-folder builds: the folder is the artifact (mirrors the Drive badges)
+        badgeId = fileName ? 'nspd' : 'build'
+        url = folderUrl
+    }
+    env.LOCAL_ARTIFACT_BADGE_ID = badgeId
+    env.LOCAL_ARTIFACT_URL = url
+    // Don't downgrade a Drive badge that already landed (the uploads run in parallel)
+    if (env.GDRIVE_ARTIFACT_BADGE != 'true') {
+        addShieldsBadge(badgeId, badgeId, resultBadgeColor('UPLOADING'), url)
+    }
+}
+
+/**
+ * Google Drive artifact badge (brightgreen, id = file extension / 'nspd' / 'build'). Replaces the
+ * orange local-share badge of the same id and marks that it did, so refreshUploadStatusBadge()
+ * leaves the badge alone afterwards.
+ */
+def addDriveArtifactBadge(String badgeId, String link) {
+    addShieldsBadge(badgeId, badgeId, resultBadgeColor('SUCCESS'), link)
+    env.GDRIVE_ARTIFACT_BADGE = 'true'
 }
 
 def addSidebarLink(String url, String title, String iconUrl) {
@@ -1627,6 +1752,9 @@ def sendUploadNotification(Map config) {
         env.UPLOAD_STORE_NAME = config.storeName ?: storeNames[platform] ?: 'Store'
     }
 
+    // Build is done, uploads start: the status badge switches from "stage" to "uploading ..."
+    refreshUploadStatusBadge()
+
     def slackResponse = sendSlackBuildNotification(params)
 
     if (slackResponse) {
@@ -1646,6 +1774,8 @@ def updateUploadStatus(String stage, String result) {
     if (stage == 'gdrive') env.UPLOAD_GDRIVE_STATUS = result
     else if (stage == 'local') env.UPLOAD_LOCAL_STATUS = result
     else if (stage == 'store') env.UPLOAD_STORE_STATUS = result
+
+    try { refreshUploadStatusBadge() } catch (Exception e) { echo "[WARN] Failed to refresh upload status badge: ${e.message}" }
 
     if (!env.UPLOAD_SLACK_TS) return
 

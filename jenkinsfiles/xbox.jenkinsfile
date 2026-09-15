@@ -95,7 +95,7 @@ pipeline {
         stage('Validate') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Validate'
+                    buildUtils.setCurrentStage('Validate')
                     buildUtils.init(buildType: params.BUILD_TYPE, branch: params.BRANCH)  // Initialize early for post handlers
                     if (params.WARMUP) {
                         currentBuild.displayName = "#${env.BUILD_NUMBER} [Warmup] ${params.BUILD_TYPE}"
@@ -112,7 +112,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Checkout'
+                    buildUtils.setCurrentStage('Checkout')
 
                     // Ensure Plastic SCM profile is configured before any cm commands
                     buildUtils.preflightPlasticSCM()
@@ -145,7 +145,7 @@ pipeline {
             }
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Pre-Build Script'
+                    buildUtils.setCurrentStage('Pre-Build Script')
                     buildUtils.runPrebuildScript(params.PREBUILD_SCRIPT)
                 }
             }
@@ -155,7 +155,7 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
                     script {
-                        env.CURRENT_STAGE = 'Startup'
+                        buildUtils.setCurrentStage('Startup')
                         buildUtils.copyPipelineScripts()
                         buildUtils.startup(params.BUILD_TYPE, env.BRANCH)
                         buildUtils.capTextures()
@@ -168,7 +168,7 @@ pipeline {
         stage('Extract Version') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Extract Version'
+                    buildUtils.setCurrentStage('Extract Version')
                     buildUtils.extractUnityVersion(env.UNITY_PROJECT)
                 }
             }
@@ -177,7 +177,7 @@ pipeline {
         stage('Winget') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Winget'
+                    buildUtils.setCurrentStage('Winget')
                     buildUtils.preflightWinget()
                 }
             }
@@ -191,7 +191,7 @@ pipeline {
             }
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Preflight: Unity'
+                    buildUtils.setCurrentStage('Preflight: Unity')
                     buildUtils.validateUnityInstallation()
                 }
             }
@@ -207,7 +207,7 @@ pipeline {
                 stage('Network') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: Network'
+                            buildUtils.setCurrentStage('Preflight: Network')
                             buildUtils.preflightNetwork()
                         }
                     }
@@ -216,7 +216,7 @@ pipeline {
                 stage('Jenkins Permissions') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: Jenkins Permissions'
+                            buildUtils.setCurrentStage('Preflight: Jenkins Permissions')
                             buildUtils.preflightJenkinsPermissions()
                         }
                     }
@@ -225,7 +225,7 @@ pipeline {
                 stage('rclone') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: rclone'
+                            buildUtils.setCurrentStage('Preflight: rclone')
                             buildUtils.preflightRclone()
                         }
                     }
@@ -234,7 +234,7 @@ pipeline {
                 stage('PlasticSCM') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: PlasticSCM'
+                            buildUtils.setCurrentStage('Preflight: PlasticSCM')
                             buildUtils.preflightPlasticSCM()
                         }
                     }
@@ -243,7 +243,7 @@ pipeline {
                 stage('Visual Studio') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: Visual Studio'
+                            buildUtils.setCurrentStage('Preflight: Visual Studio')
                             buildUtils.preflightVisualStudio()  // IL2CPP needs the C++ toolchain
                         }
                     }
@@ -252,7 +252,7 @@ pipeline {
                 stage('Long Paths') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: Long Paths'
+                            buildUtils.setCurrentStage('Preflight: Long Paths')
                             buildUtils.preflightLongPaths()
                         }
                     }
@@ -261,7 +261,7 @@ pipeline {
                 stage('Python') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: Python'
+                            buildUtils.setCurrentStage('Preflight: Python')
                             buildUtils.preflightPython()
                         }
                     }
@@ -270,7 +270,7 @@ pipeline {
                 stage('UnityDataTool') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Preflight: UnityDataTool'
+                            buildUtils.setCurrentStage('Preflight: UnityDataTool')
                             buildUtils.preflightUnityDataTool()
                         }
                     }
@@ -288,7 +288,7 @@ pipeline {
         stage('Unity License') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Unity License'
+                    buildUtils.setCurrentStage('Unity License')
                     buildUtils.preflightUnityLicense()
                 }
             }
@@ -299,7 +299,7 @@ pipeline {
                 stage('Xbox GDK') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Xbox GDK'
+                            buildUtils.setCurrentStage('Xbox GDK')
                             buildUtils.preflightXboxGDK()
                         }
                     }
@@ -308,7 +308,7 @@ pipeline {
                 stage('Validate Xbox Support') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Validate Xbox Support'
+                            buildUtils.setCurrentStage('Validate Xbox Support')
                             buildUtils.validateXboxSupport()
                         }
                     }
@@ -317,7 +317,7 @@ pipeline {
                 stage('Calculate Build Version') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Calculate Build Version'
+                            buildUtils.setCurrentStage('Calculate Build Version')
                             env.VERSION = "${env.BASE_VERSION}.${env.CHANGESET_ID}.${env.BUILD_NUMBER}"
                             echo "[OK] Full Version: ${env.VERSION}"
                         }
@@ -329,7 +329,7 @@ pipeline {
         stage('Cache Integrity') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Cache Integrity'
+                    buildUtils.setCurrentStage('Cache Integrity')
                     buildUtils.checkCacheValidity(env.UNITY_PROJECT)
                 }
             }
@@ -341,7 +341,7 @@ pipeline {
             }
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Clean Unity Cache'
+                    buildUtils.setCurrentStage('Clean Unity Cache')
                     buildUtils.cleanUnityCache(env.UNITY_PROJECT, params.CLEAN_CACHE)
                 }
             }
@@ -349,7 +349,7 @@ pipeline {
 
         stage('Unity Prepare') {
             steps {
-                script { env.CURRENT_STAGE = 'Unity Prepare' }
+                script { buildUtils.setCurrentStage('Unity Prepare') }
                 withCredentials([
                     usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
                 ]) {
@@ -369,7 +369,7 @@ pipeline {
 
         stage('Unity Build') {
             steps {
-                script { env.CURRENT_STAGE = 'Unity Build' }
+                script { buildUtils.setCurrentStage('Unity Build') }
                 withCredentials([
                     usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
                 ]) {
@@ -387,7 +387,7 @@ pipeline {
         stage('Addressables Check') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Addressables Check'
+                    buildUtils.setCurrentStage('Addressables Check')
                     // Warn-only: if the Unity build left a broken-Addressables report (catalog
                     // entries with no location), flag the build UNSTABLE. Does not stop the
                     // pipeline — the build still completes and uploads.
@@ -399,7 +399,7 @@ pipeline {
         stage('Log Build Outputs') {
             steps {
                 script {
-                    env.CURRENT_STAGE = 'Log Build Outputs'
+                    buildUtils.setCurrentStage('Log Build Outputs')
                     buildUtils.logBuildOutputs("${env.BUILD_PATH}\\output")
                 }
             }
@@ -431,7 +431,7 @@ pipeline {
                     }
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Local Share'
+                            buildUtils.setCurrentStage('Local Share')
                             buildUtils.uploadToLocalShare(
                                 buildPath: "${env.BUILD_PATH}\\output",
                                 buildType: params.BUILD_TYPE
@@ -443,7 +443,7 @@ pipeline {
                 stage('Unity Data Tool') {
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Unity Data Tool'
+                            buildUtils.setCurrentStage('Unity Data Tool')
                             buildUtils.runUnityDataTool()
                         }
                     }
@@ -455,7 +455,7 @@ pipeline {
                     }
                     steps {
                         script {
-                            env.CURRENT_STAGE = 'Google Drive Upload'
+                            buildUtils.setCurrentStage('Google Drive Upload')
                         }
                         withCredentials([file(credentialsId: 'rclone', variable: 'RCLONE_CONFIG')]) {
                             script {

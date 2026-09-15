@@ -4212,7 +4212,7 @@ def uploadToGoogleDrive(Map config) {
         }
     }
     if (fileLink) {
-        common.addShieldsBadge('ipa', 'ipa', 'brightgreen', fileLink)
+        common.addDriveArtifactBadge('ipa', fileLink)
         env.GDRIVE_FILE_LINK = fileLink
     }
 
@@ -4278,6 +4278,11 @@ def uploadToLocalShare(Map config) {
         // Add sidebar link
         def fileUrl = "file:${uncPath.replace('\\', '/')}"
         common.addSidebarLink(fileUrl, 'Local Build', 'https://img.icons8.com/fluency/48/folder-invoices--v1.png')
+
+        // Orange "ipa" badge + "Download IPA (Local)" link to the copy that just landed, so the
+        // build is grabbable while the Drive upload (which turns the badge green) is still running.
+        def fileName = sh(script: "cd \"${buildPath}\" && ls *.ipa 2>/dev/null | head -1", returnStdout: true).trim()
+        common.addLocalArtifactLinks(uncPath, fileName ?: null)
 
         common.updateUploadStatus('local', 'done')
 
