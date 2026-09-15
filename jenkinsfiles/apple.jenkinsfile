@@ -451,21 +451,6 @@ pipeline {
                     }
                 }
 
-                stage('Bugpunch Symbols') {
-                    when {
-                        expression { !params.WARMUP }
-                    }
-                    steps {
-                        script {
-                            buildUtils.setCurrentStage('Bugpunch Symbols')
-                            buildUtils.uploadBugpunchSymbols(
-                                unityProject: env.UNITY_PROJECT,
-                                archivePath: "${env.XCODE_BASE_PATH}/output.xcarchive"
-                            )
-                        }
-                    }
-                }
-
                 stage('Export IPAs') {
                     failFast false
                     parallel {
