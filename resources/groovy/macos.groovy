@@ -4824,15 +4824,15 @@ def uploadBugpunchSymbols(Map config) {
     def rc = sh(returnStatus: true, script: """
         set -u
         CONFIG="${unityProject}/Assets/Resources/BugpunchConfig.asset"
-        if [ ! -f "\$CONFIG" ]; then echo "[WARN] \$CONFIG not found — Bugpunch symbol upload skipped"; exit 2; fi
-        API_KEY=\$(sed -nE 's/^ *apiKey: *([^ ]+).*//p' "\$CONFIG" | head -1)
-        SERVER=\$(sed -nE 's/^ *serverUrl: *([^ ]+).*//p' "\$CONFIG" | head -1)
+        if [ ! -f "\$CONFIG" ]; then echo "[WARN] \$CONFIG not found - Bugpunch symbol upload skipped"; exit 2; fi
+        API_KEY=\$(sed -nE 's/^ *apiKey: *([^ ]+).*/\1/p' "\$CONFIG" | head -1)
+        SERVER=\$(sed -nE 's/^ *serverUrl: *([^ ]+).*/\1/p' "\$CONFIG" | head -1)
         SERVER=\${SERVER:-https://bugpunch.com}
-        if [ -z "\$API_KEY" ]; then echo "[WARN] no apiKey in BugpunchConfig.asset — Bugpunch symbol upload skipped"; exit 2; fi
+        if [ -z "\$API_KEY" ]; then echo "[WARN] no apiKey in BugpunchConfig.asset - Bugpunch symbol upload skipped"; exit 2; fi
 
         SCRIPT=\$(ls -t "${unityProject}"/Library/PackageCache/au.com.oddgames.bugpunch@*/Tools/upload-ios-symbols.sh 2>/dev/null | head -1)
         [ -n "\$SCRIPT" ] || SCRIPT=\$(ls "${unityProject}"/Packages/au.com.oddgames.bugpunch/Tools/upload-ios-symbols.sh 2>/dev/null | head -1)
-        if [ -z "\$SCRIPT" ]; then echo "[WARN] Bugpunch package Tools/upload-ios-symbols.sh not found — SDK too old for the pipeline upload"; exit 2; fi
+        if [ -z "\$SCRIPT" ]; then echo "[WARN] Bugpunch package Tools/upload-ios-symbols.sh not found - SDK too old for the pipeline upload"; exit 2; fi
         if [ ! -d "${archivePath}" ]; then echo "[WARN] archive not found at ${archivePath}"; exit 2; fi
 
         echo "[INFO] using \$SCRIPT"
@@ -4840,7 +4840,7 @@ def uploadBugpunchSymbols(Map config) {
     """)
 
     if (rc != 0) {
-        echo "[WARN] Bugpunch symbol upload finished with exit ${rc} — iOS crashes on this build may not symbolicate"
+        echo "[WARN] Bugpunch symbol upload finished with exit ${rc} - iOS crashes on this build may not symbolicate"
         if (ensureCommon()) {
             common.setUnstable("Bugpunch symbol upload incomplete (exit ${rc})")
         }
