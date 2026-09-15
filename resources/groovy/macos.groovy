@@ -4825,8 +4825,8 @@ def uploadBugpunchSymbols(Map config) {
         set -u
         CONFIG="${unityProject}/Assets/Resources/BugpunchConfig.asset"
         if [ ! -f "\$CONFIG" ]; then echo "[WARN] \$CONFIG not found - Bugpunch symbol upload skipped"; exit 2; fi
-        API_KEY=\$(sed -nE 's/^ *apiKey: *([^ ]+).*/\1/p' "\$CONFIG" | head -1)
-        SERVER=\$(sed -nE 's/^ *serverUrl: *([^ ]+).*/\1/p' "\$CONFIG" | head -1)
+        API_KEY=\$(sed -nE 's/^ *apiKey: *([^ ]+).*/\\1/p' "\$CONFIG" | head -1)
+        SERVER=\$(sed -nE 's/^ *serverUrl: *([^ ]+).*/\\1/p' "\$CONFIG" | head -1)
         SERVER=\${SERVER:-https://bugpunch.com}
         if [ -z "\$API_KEY" ]; then echo "[WARN] no apiKey in BugpunchConfig.asset - Bugpunch symbol upload skipped"; exit 2; fi
 
