@@ -125,7 +125,7 @@ namespace ODDFramework
                 try
                 {
                     Directory.CreateDirectory(artifacts);
-                    File.AppendAllText(path, line + Environment.NewLine);
+                    File.AppendAllText(path, line + System.Environment.NewLine);
                 }
                 catch (Exception ex)
                 {
