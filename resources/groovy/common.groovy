@@ -457,12 +457,12 @@ def refreshUploadStatusBadge() {
  */
 def addLocalArtifactLinks(String uncFolder, String fileName) {
     if (!uncFolder) return
-    def folderUrl = "file:${uncFolder.replace('\\', '/')}".replace(' ', '%20')
+    def folderUrl = localShareUrl(uncFolder)
     def badgeId
     def url
     if (fileName && !fileName.toLowerCase().endsWith('.nspd')) {
         badgeId = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase()
-        url = "${folderUrl}/${fileName.replace(' ', '%20')}"
+        url = localShareUrl("${uncFolder}\\${fileName}")
         addSidebarLink(url, "Download ${badgeId.toUpperCase()} (Local)", 'https://img.icons8.com/fluency/48/folder-invoices--v1.png')
     } else {
         // Switch .nspd and loose-folder builds: the folder is the artifact (mirrors the Drive badges)
@@ -487,8 +487,35 @@ def addDriveArtifactBadge(String badgeId, String link) {
     env.GDRIVE_ARTIFACT_BADGE = 'true'
 }
 
+/**
+ * URL for a path on the local build share (\\server\share\...).
+ *
+ * Browsers refuse to open file:// from an http page and the sidebar-link plugin rejects the scheme
+ * outright ("URI scheme file is not allowed"), so a file:// link is dead everywhere it is shown.
+ * Set LOCAL_SHARE_HTTP_BASE (job or global env) to the http(s) URL that serves the share root and
+ * every local link - badge, sidebar, Slack - becomes a real download. Simplest setup: on the
+ * controller, junction JENKINS_HOME/userContent/builds -> the share folder and set
+ * LOCAL_SHARE_HTTP_BASE=http://<jenkins-host>:8080/userContent/builds. Without it the file:// form
+ * is returned (badge + Slack text only; addSidebarLink skips it).
+ */
+def localShareUrl(String uncPath) {
+    if (!uncPath) return ''
+    def norm = uncPath.replace('\\', '/')
+    def base = (env.LOCAL_SHARE_HTTP_BASE ?: '').trim()
+    if (!base) return "file:${norm}".replace(' ', '%20')
+
+    def shareRoot = (env.LOCAL_SHARE_PATH ?: '\\\\odd-jenkins\\builds').replace('\\', '/')
+    def rel = norm.toLowerCase().startsWith(shareRoot.toLowerCase()) ? norm.substring(shareRoot.length()) : norm
+    def encoded = rel.split('/').findAll { it }.collect { java.net.URLEncoder.encode(it, 'UTF-8').replace('+', '%20') }.join('/')
+    return "${base.replaceFirst('/+$', '')}/${encoded}"
+}
+
 def addSidebarLink(String url, String title, String iconUrl) {
     if (!url) { echo "No URL provided for sidebar link: ${title}"; return }
+    if (url.startsWith('file:')) {
+        echo "[INFO] Sidebar link '${title}' skipped: the sidebar-link plugin rejects file:// URLs - set LOCAL_SHARE_HTTP_BASE to serve the share over http (see localShareUrl)"
+        return
+    }
     try {
         def linkActionClass = this.class.classLoader.loadClass("hudson.plugins.sidebar_link.LinkAction")
         def action = linkActionClass.newInstance(url, title, iconUrl)
@@ -1004,7 +1031,7 @@ def notifyLocalCopyReady(String fileUrl) {
         if (!slackUserId) return
         sendSlackMessage(
             channel: slackUserId,
-            message: ":open_file_folder: Local copy ready for <${env.BUILD_URL}|${env.JOB_NAME} #${env.BUILD_NUMBER}>:\n<file:${env.LOCAL_BUILD_PATH.replace('\\', '/')}|${env.LOCAL_BUILD_PATH}>"
+            message: ":open_file_folder: Local copy ready for <${env.BUILD_URL}|${env.JOB_NAME} #${env.BUILD_NUMBER}>:\n<${localShareUrl(env.LOCAL_BUILD_PATH)}|${env.LOCAL_BUILD_PATH}>"
         )
     } catch (Exception e) {
         echo "[WARN] Failed to DM local copy notification: ${e.message}"
@@ -1091,8 +1118,7 @@ def sendSlackBuildNotification(Map config) {
         links += " | <${latUrl}|:fire: Live App Testing>"
     }
     if (env.LOCAL_BUILD_PATH) {
-        def fileUrl = "file:${env.LOCAL_BUILD_PATH.replace('\\', '/')}"
-        links += " | <${fileUrl}|:open_file_folder: Local>"
+        links += " | <${localShareUrl(env.LOCAL_BUILD_PATH)}|:open_file_folder: Local>"
     }
     if (status == 'failure' || status == 'unstable') {
         if (env.UNITY_ERRORS_URL) {
@@ -1835,7 +1861,7 @@ def buildUploadStatusLine() {
     }
     if (env.UPLOAD_LOCAL_STATUS) {
         def icon = statusEmoji[env.UPLOAD_LOCAL_STATUS] ?: ':hourglass_flowing_sand:'
-        def label = env.LOCAL_BUILD_PATH ? "<file:${env.LOCAL_BUILD_PATH.replace('\\', '/')}|Local>" : 'Local'
+        def label = env.LOCAL_BUILD_PATH ? "<${localShareUrl(env.LOCAL_BUILD_PATH)}|Local>" : 'Local'
         parts << "${icon} ${label}"
     }
     if (env.UPLOAD_STORE_STATUS) {

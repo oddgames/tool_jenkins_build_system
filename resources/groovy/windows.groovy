@@ -6423,7 +6423,7 @@ def uploadToLocalShare(Map config) {
 
     // Set path and sidebar link early so they're available during upload
     env.LOCAL_BUILD_PATH = destPath
-    def fileUrl = "file:${destPath.replace('\\', '/')}"
+    def fileUrl = common.localShareUrl(destPath)
     common.addSidebarLink(fileUrl, 'Local Build', 'https://img.icons8.com/fluency/48/folder-invoices--v1.png')
 
     echo "[INFO] Copying build to local share: ${destPath}"

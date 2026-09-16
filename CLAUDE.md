@@ -218,8 +218,14 @@ blue = running, **orange = built but not yet uploaded**, green/yellow/red/grey =
   finishes. The Drive upload adds its green badge via `common.addDriveArtifactBadge()` with the
   **same badge id** (the extension), which replaces the orange one. Jobs with no Drive upload
   (Steam) get the local badge re-coloured green when every upload has finished.
-- `file://` links are blocked by browsers when clicked from an http page (existing "Local Build"
-  link has the same limitation) — right-click → copy link, or use a local-links extension.
+- **`file://` links are dead everywhere**: browsers block them from an http page, Slack won't
+  linkify them, and the sidebar-link plugin rejects the scheme outright (`URI scheme "file" is not
+  allowed`) — the `Local Build` sidebar link had never actually been added. All local links go through
+  `common.localShareUrl(uncPath)`: set **`LOCAL_SHARE_HTTP_BASE`** (global or job env) to the http(s)
+  URL serving the share root and badge, sidebar and Slack links become real downloads. Simplest:
+  on the controller, junction `JENKINS_HOME/userContent/builds` → the share folder and set
+  `LOCAL_SHARE_HTTP_BASE=http://<jenkins-host>:8080/userContent/builds`. Unset, the `file://` form
+  is used for the badge/Slack text and `addSidebarLink()` skips it with an `[INFO]` line.
 - **The Slack channel message is posted when the local share copy is done**, not when uploads
   start: `sendUploadNotification()` only registers the targets (pending ⏳) when `local` is among
   them; `updateUploadStatus('local', done|failed)` posts the message with every target's current

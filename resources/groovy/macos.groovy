@@ -4281,7 +4281,7 @@ def uploadToLocalShare(Map config) {
         env.LOCAL_BUILD_PATH = uncPath
 
         // Add sidebar link
-        def fileUrl = "file:${uncPath.replace('\\', '/')}"
+        def fileUrl = common.localShareUrl(uncPath)
         common.addSidebarLink(fileUrl, 'Local Build', 'https://img.icons8.com/fluency/48/folder-invoices--v1.png')
 
         // Orange "ipa" badge + "Download IPA (Local)" link to the copy that just landed, so the
