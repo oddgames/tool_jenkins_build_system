@@ -1637,8 +1637,14 @@ def extractErrorLines(List lines) {
  *   - an entry appended to the build description (shown in the Builds history widget),
  *   - env.UNITY_ERRORS_URL, so the Slack notification can link to it,
  *   - the plain URL echoed into the stage log (for the pipeline overview).
- * The artifact is archived later in post{always{}}, so the URL resolves once the
- * build finishes. artifactRelPath is relative to the archived 'artifacts/' dir.
+ * artifactRelPath is relative to the 'artifacts/' dir (ARTIFACT_PATH).
+ *
+ * The file is archived HERE, not left for post{always{}}: the Slack failure post
+ * goes out from post{failure{}}, which runs BEFORE always{} archives the artifacts
+ * dir, so a link that waited for the final archive was a 404 at the moment anyone
+ * clicked it from Slack (build #2458). Archiving the one small file immediately
+ * makes the URL live before any notification; the final archive re-archives it
+ * harmlessly.
  *
  * Idempotent: called both inline (printUnityErrors, mid-build) and in post
  * (collectUnityErrors). The badge/env/description refresh on every call; the
@@ -1647,8 +1653,17 @@ def extractErrorLines(List lines) {
 def linkErrorLog(String artifactRelPath, String label = 'Unity Errors') {
     if (!env.BUILD_URL) { echo "[WARN] linkErrorLog: BUILD_URL not set, skipping link"; return }
     def url = "${env.BUILD_URL}artifact/${artifactRelPath}"
+    try {
+        if (env.ARTIFACT_PATH) {
+            dir(env.ARTIFACT_PATH) {
+                archiveArtifacts artifacts: artifactRelPath, allowEmptyArchive: true
+            }
+        }
+    } catch (Exception e) {
+        echo "[WARN] linkErrorLog: could not archive ${artifactRelPath} now (link resolves after the final archive): ${e.message}"
+    }
     env.UNITY_ERRORS_URL = url
-    echo "[INFO] ${label} log (clickable after build finishes): ${url}"
+    echo "[INFO] ${label} log: ${url}"
 
     // Red shields.io badge, clickable through to the log (idempotent: addShieldsBadge
     // removes the prior badge with this id before re-adding).
