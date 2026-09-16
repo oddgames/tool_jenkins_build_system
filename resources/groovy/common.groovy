@@ -1892,12 +1892,49 @@ def sendUploadNotification(Map config) {
     // Build is done, uploads start: the status badge switches from "stage" to "uploading ..."
     refreshUploadStatusBadge()
 
-    def slackResponse = sendSlackBuildNotification(params)
+    // The local share copy lands minutes before Google Drive / the store, so the channel message
+    // waits for it: the first thing people see is a build they can grab, not a row of hourglasses.
+    // updateUploadStatus('local', ...) posts it (done or failed) and later updates edit it in place;
+    // handleBuildSuccess() still posts if the local stage never reported. Pass notifyAfterLocal:
+    // false to post immediately as before; jobs without a local upload always post immediately.
+    def deferUntilLocal = uploads.contains('local') && config.notifyAfterLocal != false
+    if (deferUntilLocal) {
+        // Keep the explicit config (not just the env fallbacks) for the deferred post
+        env.UPLOAD_NOTIFY_CHANNEL = params.channel ?: ''
+        env.UPLOAD_NOTIFY_BUILD_TYPE = params.buildType ?: ''
+        env.UPLOAD_NOTIFY_BRANCH = params.branch ?: ''
+        env.UPLOAD_NOTIFY_CHANGESET = params.changesetId ?: ''
+        env.UPLOAD_NOTIFY_VERSION = params.version ?: ''
+        env.UPLOAD_NOTIFY_APP_ICON = params.appIcon ?: ''
+        env.UPLOAD_NOTIFY_PLATFORM = params.platform ?: ''
+        env.UPLOAD_NOTIFY_AFTER_LOCAL = 'true'
+        echo "[INFO] Slack upload notification deferred until the local share copy is done"
+        return
+    }
 
+    _postUploadNotification(params)
+}
+
+/** Post the channel upload message and remember its coordinates so later status changes edit it. */
+private void _postUploadNotification(Map params) {
+    def slackResponse = sendSlackBuildNotification(params)
     if (slackResponse) {
         env.UPLOAD_SLACK_TS = slackResponse.ts
         env.UPLOAD_SLACK_CHANNEL = slackResponse.channelId
     }
+}
+
+/** The config sendUploadNotification() was given, for a post deferred until the local copy is done. */
+private Map _deferredUploadConfig() {
+    def cfg = [:]
+    if (env.UPLOAD_NOTIFY_CHANNEL) cfg.channel = env.UPLOAD_NOTIFY_CHANNEL
+    if (env.UPLOAD_NOTIFY_BUILD_TYPE) cfg.buildType = env.UPLOAD_NOTIFY_BUILD_TYPE
+    if (env.UPLOAD_NOTIFY_BRANCH) cfg.branch = env.UPLOAD_NOTIFY_BRANCH
+    if (env.UPLOAD_NOTIFY_CHANGESET) cfg.changesetId = env.UPLOAD_NOTIFY_CHANGESET
+    if (env.UPLOAD_NOTIFY_VERSION) cfg.version = env.UPLOAD_NOTIFY_VERSION
+    if (env.UPLOAD_NOTIFY_APP_ICON) cfg.appIcon = env.UPLOAD_NOTIFY_APP_ICON
+    if (env.UPLOAD_NOTIFY_PLATFORM) cfg.platform = env.UPLOAD_NOTIFY_PLATFORM
+    return cfg
 }
 
 /**
@@ -1913,6 +1950,19 @@ def updateUploadStatus(String stage, String result) {
     else if (stage == 'store') env.UPLOAD_STORE_STATUS = result
 
     try { refreshUploadStatusBadge() } catch (Exception e) { echo "[WARN] Failed to refresh upload status badge: ${e.message}" }
+
+    // Deferred channel message: the local copy just landed (or failed) - post it now, with every
+    // target's current state (a Drive upload that finished first already shows as done).
+    if (env.UPLOAD_NOTIFY_AFTER_LOCAL == 'true' && stage == 'local') {
+        env.UPLOAD_NOTIFY_AFTER_LOCAL = ''
+        try {
+            echo "[INFO] Local share ${result} - posting the Slack upload notification"
+            _postUploadNotification(buildSlackParams(_deferredUploadConfig()))
+        } catch (Exception e) {
+            echo "[WARN] Failed to post upload notification: ${e.message}"
+        }
+        return
+    }
 
     if (!env.UPLOAD_SLACK_TS) return
 

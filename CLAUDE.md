@@ -220,6 +220,32 @@ blue = running, **orange = built but not yet uploaded**, green/yellow/red/grey =
   (Steam) get the local badge re-coloured green when every upload has finished.
 - `file://` links are blocked by browsers when clicked from an http page (existing "Local Build"
   link has the same limitation) — right-click → copy link, or use a local-links extension.
+- **The Slack channel message is posted when the local share copy is done**, not when uploads
+  start: `sendUploadNotification()` only registers the targets (pending ⏳) when `local` is among
+  them; `updateUploadStatus('local', done|failed)` posts the message with every target's current
+  state, later updates edit it in place, and `handleBuildSuccess()` still posts if the local stage
+  never reported. `notifyAfterLocal: false` restores the immediate post.
+
+## Build Warnings → UNSTABLE (`[BUILD-WARN]`)
+
+Any build tool can flag the build UNSTABLE (yellow; the build still uploads) by getting a line into
+`ARTIFACT_PATH/build_warnings.txt`. The `Build Warnings` stage (every player-build Jenkinsfile,
+after the last build step) reads that one file → `setUnstable()` once with the list, a yellow
+`warnings │ N` badge, a sidebar link to the archived file, and the lines in the Slack post.
+
+- **Unity**: `Debug.LogWarning("[BUILD-WARN] msg")` from anywhere (any assembly, worker threads
+  included) or `Pipeline.Warn("msg")`. `PipelineWarnings.cs` installs an
+  `Application.logMessageReceivedThreaded` hook on every batch-mode editor load, so asset import,
+  Prepare and Build are all covered; it writes the file itself (de-duplicated, one line each) — the
+  pipeline never scans the Unity console log.
+- **Xcode**: `echo "warning: [BUILD-WARN] msg"` from a Run Script phase. `archiveXcodeProject()`
+  greps its own tee'd `xcodebuild_archive.log` on the agent (`collectToolWarnings()`).
+- **Pipeline code**: `buildUtils.appendBuildWarning("msg")`; **shell**: append to the file.
+- **`UNSTABLE_WARNING_PATTERNS`** (job env, `;`-separated case-insensitive regexes) promotes
+  matching *native* Unity warnings/errors and Xcode log lines too, e.g. `Shader error in;\[Bugpunch\] NOT CONFIRMED`.
+  Keep this list specific — a normal Unity build logs hundreds of warnings.
+- Keep tools decoupled: a tool that wants to flag the build emits the marker (or matches a pattern);
+  the pipeline never reads another product's private files or APIs.
 
 ## Firebase Crashlytics Symbol Upload
 
