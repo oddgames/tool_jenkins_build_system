@@ -47,7 +47,8 @@ def checkBrokenAddressables() {
 
     // Compose the Slack detail block: summary + per-group breakdown + a link to the archived report,
     // so the full list is one click away. Rendered by sendSlackBuildNotification() on unstable builds.
-    def reportUrl = "${env.BUILD_URL}artifact/artifacts/AddressablesBrokenEntries.txt"
+    // Archived from inside dir('artifacts'), so the report sits at the artifact root.
+    def reportUrl = "${env.BUILD_URL}artifact/AddressablesBrokenEntries.txt"
     def detail = ":jigsaw: *Broken Addressables* — ${summary}\n"
     detail += "Each fails at runtime with `No Location found for Key=<guid>` (blank icons / missing content).\n"
     if (perGroup) {
@@ -61,6 +62,142 @@ def checkBrokenAddressables() {
 
     echo "[UNSTABLE] Addressables: ${summary} — see AddressablesBrokenEntries.txt (archived artifact) and the build log."
     setUnstable("Broken Addressables — ${summary}")
+}
+
+// ============================================================================
+// BUILD WARNINGS -> UNSTABLE
+//
+// Any build tool can flag the build UNSTABLE (yellow, still builds and uploads) by getting a line
+// into ARTIFACT_PATH/build_warnings.txt:
+//   Unity   Debug.LogWarning("[BUILD-WARN] msg") anywhere, or Pipeline.Warn("msg") - a log hook in
+//           PipelineWarnings.cs writes the file itself, so nothing here scans the Unity console.
+//   Xcode   echo "warning: [BUILD-WARN] msg" from a Run Script phase - archiveXcodeProject() greps
+//           its own log file on the agent (collectToolWarnings) into the same file.
+//   Shell   echo "msg" >> "$ARTIFACT_PATH/build_warnings.txt"
+// Optional UNSTABLE_WARNING_PATTERNS (job env, ';'-separated regexes) promotes matching native
+// Unity/Xcode warnings too. checkBuildWarnings() (the 'Build Warnings' stage, after every build
+// step) is the only reader: one small file, one unstable() call, badge + sidebar + Slack.
+// ============================================================================
+
+/**
+ * Pull marker lines (and UNSTABLE_WARNING_PATTERNS matches) out of a tool's log file into
+ * build_warnings.txt. Runs grep on the agent so a multi-MB xcodebuild log never crosses to the
+ * controller. Marker lines keep only the text after the marker; pattern matches keep the line.
+ *
+ * @param logFile  absolute path of the log on the agent
+ * @param source   short tool name used as a prefix, e.g. 'Xcode'
+ */
+def collectToolWarnings(String logFile, String source) {
+    if (!env.ARTIFACT_PATH || !logFile) return
+    def marker = '[BUILD-WARN]'
+    // Job-level regexes -> one ERE alternation. Users write ';'-separated patterns; '|'-join them.
+    def patterns = (env.UNSTABLE_WARNING_PATTERNS ?: '').split(';').collect { it.trim() }.findAll { it }
+    def alternation = patterns ? patterns.join('|') : ''
+    def out = "${env.ARTIFACT_PATH}/build_warnings.txt"
+    try {
+        if (isUnix()) {
+            sh label: "Collect ${source} build warnings", script: """#!/bin/bash
+                [ -f '${logFile}' ] || exit 0
+                mkdir -p '${env.ARTIFACT_PATH}'
+                {
+                    grep -F -- '${marker}' '${logFile}' | sed 's/.*\\[BUILD-WARN\\][[:space:]]*//'
+                    if [ -n '${alternation}' ]; then
+                        grep -E -i -- '${alternation}' '${logFile}' | grep -v -F -- '${marker}'
+                    fi
+                } | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*\$//' -e '/^\$/d' | cut -c1-300 | awk '!seen[\$0]++' \\
+                  | sed 's/^/${source}: /' >> '${out}'
+                exit 0
+            """
+        } else {
+            // findstr can't do ERE alternation reliably; a PowerShell script handles both channels.
+            // Same write-file-then-run pattern as runPrebuildScript() in windows.groovy.
+            def ps = """
+                \$log = '${logFile.replace("'", "''")}'
+                if (-not (Test-Path -LiteralPath \$log)) { exit 0 }
+                New-Item -ItemType Directory -Force -Path '${env.ARTIFACT_PATH.replace("'", "''")}' | Out-Null
+                \$marker = '${marker}'
+                \$alt = '${alternation.replace("'", "''")}'
+                \$seen = @{}
+                foreach (\$line in [System.IO.File]::ReadLines(\$log)) {
+                    \$i = \$line.IndexOf(\$marker)
+                    if (\$i -ge 0) { \$msg = \$line.Substring(\$i + \$marker.Length) }
+                    elseif (\$alt -and (\$line -imatch \$alt)) { \$msg = \$line }
+                    else { continue }
+                    \$msg = \$msg.Trim()
+                    if (\$msg.Length -gt 300) { \$msg = \$msg.Substring(0, 300) }
+                    if (\$msg -and -not \$seen.ContainsKey(\$msg)) { \$seen[\$msg] = 1; Add-Content -LiteralPath '${out.replace("'", "''")}' -Value ('${source}: ' + \$msg) }
+                }
+                exit 0
+            """.stripIndent()
+            def scriptFile = "${env.WORKSPACE}\\collect_${source.toLowerCase()}_warnings.ps1"
+            writeFile file: scriptFile, text: ps
+            try {
+                bat(script: "powershell -NoProfile -ExecutionPolicy Bypass -File \"${scriptFile}\"", returnStatus: true)
+            } finally {
+                bat(script: "del /f /q \"${scriptFile}\" 2>nul & exit /b 0", returnStatus: true)
+            }
+        }
+    } catch (Exception e) {
+        echo "[WARN] Could not collect ${source} warnings from ${logFile}: ${e.message}"
+    }
+}
+
+/**
+ * Append one line to build_warnings.txt from pipeline code (Unity and Xcode feed the file
+ * themselves). Picked up by checkBuildWarnings(); no-op without ARTIFACT_PATH.
+ */
+def appendBuildWarning(String line) {
+    if (!env.ARTIFACT_PATH || !line?.trim()) return
+    def path = "${env.ARTIFACT_PATH}/build_warnings.txt"
+    try {
+        def existing = fileExists(path) ? readFile(path) : ''
+        if (existing && !existing.endsWith('\n')) existing += '\n'
+        writeFile file: path, text: existing + line.trim() + '\n'
+        echo "[BUILD-WARN] ${line.trim()}"
+    } catch (Exception e) {
+        echo "[WARN] Could not record build warning '${line}': ${e.message}"
+    }
+}
+
+/**
+ * Flag the build UNSTABLE for every warning the build tools raised (see the section header).
+ * No-op when build_warnings.txt is absent or empty. Otherwise: lists them in the log, adds a
+ * yellow 'warnings | N' badge and a sidebar link to the archived file, and calls setUnstable()
+ * once with the (capped) list so the Slack post shows them.
+ */
+def checkBuildWarnings() {
+    if (!env.ARTIFACT_PATH) return
+    def reportPath = "${env.ARTIFACT_PATH}/build_warnings.txt"
+    if (!fileExists(reportPath)) { echo "[OK] No build warnings raised"; return }
+
+    def lines = []
+    try {
+        lines = readFile(reportPath).readLines().collect { it.trim() }.findAll { it }.unique()
+    } catch (Exception e) {
+        echo "[WARN] Could not read ${reportPath}: ${e.message}"
+        return
+    }
+    if (!lines) { echo "[OK] No build warnings raised"; return }
+
+    echo "========== BUILD WARNINGS (${lines.size()}) =========="
+    lines.each { echo "  - ${it}" }
+    echo "=============================================="
+
+    // Archived from inside dir('artifacts'), so the file sits at the artifact root.
+    def reportUrl = "${env.BUILD_URL}artifact/build_warnings.txt"
+    env.BUILD_WARNINGS_COUNT = "${lines.size()}"
+    env.BUILD_WARNINGS_URL = reportUrl
+    try {
+        addShieldsDoubleBadge('warnings', 'warnings', "${lines.size()}", '555555', resultBadgeColor('UNSTABLE'), null, reportUrl)
+        addSidebarLink(reportUrl, "Build Warnings (${lines.size()})", 'symbol-warning.png')
+    } catch (Exception e) {
+        echo "[WARN] Could not add build-warnings badge: ${e.message}"
+    }
+
+    def maxShown = 10
+    def shown = lines.take(maxShown).collect { "• ${it}" }
+    def more = lines.size() > maxShown ? "\n… ${lines.size() - maxShown} more — see build_warnings.txt" : ''
+    setUnstable("Build warnings (${lines.size()}):\n${shown.join('\n')}${more}")
 }
 
 /**

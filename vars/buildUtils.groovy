@@ -465,7 +465,7 @@ def copyPipelineScripts() {
         'GameCoreXboxOne': 'PipelineXbox.cs',
         'PS5': 'PipelinePS5.cs'
     ]
-    def csFiles = ['Pipeline.cs', 'PipelineArtifactCopy.cs']
+    def csFiles = ['Pipeline.cs', 'PipelineWarnings.cs', 'PipelineArtifactCopy.cs']
     def platformScript = platformScripts[env.PLATFORM]
     if (platformScript) {
         csFiles << platformScript
@@ -696,6 +696,10 @@ def finalizeBuild(Map config) { ensureInitialized(); common.finalizeBuild(config
 def runFailureAnalysis(Map config) { finalizeBuild(config) }  // backwards compat
 def handleBuildAborted(Map config) { ensureInitialized(); common.handleBuildAborted(config) }
 def setUnstable(String reason) { common.setUnstable(reason) }
+// Build warnings -> UNSTABLE (see the BUILD WARNINGS section in common.groovy)
+def checkBuildWarnings() { ensureInitialized(); common.checkBuildWarnings() }
+def collectToolWarnings(String logFile, String source) { ensureInitialized(); common.collectToolWarnings(logFile, source) }
+def appendBuildWarning(String line) { ensureInitialized(); common.appendBuildWarning(line) }
 def checkBrokenAddressables() { ensureInitialized(); common.checkBrokenAddressables() }
 def addBuildWarning(String warning) { common.addBuildWarning(warning) }
 

@@ -2572,6 +2572,11 @@ def archiveXcodeProject(Map config) {
 ${entGate}
         fi
     """
+
+    // A Run Script phase can flag the build UNSTABLE with `echo "warning: [BUILD-WARN] msg"`;
+    // UNSTABLE_WARNING_PATTERNS promotes native xcodebuild warnings. Read from the tee'd log on
+    // the agent - the 'Build Warnings' stage turns the collected lines into the UNSTABLE result.
+    common.collectToolWarnings(logPath, 'Xcode')
 }
 
 def generateExportOptionsPlist(Map config) {

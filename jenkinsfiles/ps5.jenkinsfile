@@ -384,6 +384,17 @@ pipeline {
             }
         }
 
+        stage('Build Warnings') {
+            steps {
+                script {
+                    buildUtils.setCurrentStage('Build Warnings')
+                    // Warn-only: anything Unity/Xcode raised via [BUILD-WARN] (or UNSTABLE_WARNING_PATTERNS)
+                    // flags the build UNSTABLE. Does not stop the pipeline - the build still uploads.
+                    buildUtils.checkBuildWarnings()
+                }
+            }
+        }
+
         stage('Log Build Outputs') {
             steps {
                 script {
