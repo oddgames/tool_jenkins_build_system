@@ -4178,6 +4178,17 @@ def uploadToGoogleDrive(Map config) {
     def rclonePath = rcloneCheck.path
     echo "[INFO] Using rclone at: ${rclonePath}"
 
+    // Folder link first, while nothing is transferring: after the upload only the file link
+    // stands between rclone exiting and the Slack update. mkdir so the folder exists to link.
+    def rawFolderLink = sh(
+        script: "\"${rclonePath}\" --config \"\$RCLONE_CONFIG\" mkdir \"\$RCLONE_REMOTE/${destFolder}\" 2>&1 || true; " +
+                "\"${rclonePath}\" --config \"\$RCLONE_CONFIG\" link \"\$RCLONE_REMOTE/${destFolder}\" 2>&1 || true",
+        returnStdout: true
+    ).trim()
+    def gdriveFolderLink = rawFolderLink.split('\n').find { it.trim().startsWith('http') }?.trim() ?: ''
+    if (!gdriveFolderLink && rawFolderLink) echo "[WARN] rclone folder link output (no URL found):\n${rawFolderLink.take(500)}"
+    env.GDRIVE_FOLDER_LINK = gdriveFolderLink ?: ''
+
     sh """
         DEST_PATH="\${RCLONE_REMOTE}/${destFolder}"
         echo "Uploading to: \$DEST_PATH"
@@ -4221,17 +4232,10 @@ def uploadToGoogleDrive(Map config) {
         env.GDRIVE_FILE_LINK = fileLink
     }
 
-    def rawFolderLink = sh(
-        script: "\"${rclonePath}\" --config \"\$RCLONE_CONFIG\" link \"\$RCLONE_REMOTE/${destFolder}\" 2>&1 || true",
-        returnStdout: true
-    ).trim()
-    def gdriveFolderLink = rawFolderLink.split('\n').find { it.trim().startsWith('http') }?.trim() ?: ''
-    if (!gdriveFolderLink && rawFolderLink) echo "[WARN] rclone folder link output (no URL found):\n${rawFolderLink.take(500)}"
+    // Tell Slack now - the message only needs the links, and both are in env at this point.
+    common.updateUploadStatus('gdrive', 'done')
 
     common.addGoogleDriveLinks(gdriveFolderLink, fileLink, 'IPA', 'https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/apple.png')
-
-    env.GDRIVE_FOLDER_LINK = gdriveFolderLink ?: ''
-    common.updateUploadStatus('gdrive', 'done')
 
     return [folderLink: gdriveFolderLink, fileLink: fileLink, fileName: fileName]
 }

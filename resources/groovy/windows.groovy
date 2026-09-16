@@ -6206,6 +6206,24 @@ exit /b 0""", returnStdout: true).trim()
     return link
 }
 
+/**
+ * Create the destination folder on the remote and return its share link. Called BEFORE the upload
+ * so that afterwards only the file link stands between rclone exiting and the Slack update.
+ */
+private def _rcloneFolderLink(String rclonePath, String destFolder) {
+    bat(script: """@echo off
+"${rclonePath}" --config "%RCLONE_CONFIG%" mkdir "%RCLONE_REMOTE%/${destFolder}" 2>&1
+exit /b 0""", returnStatus: true)
+    def link = _rcloneLink(rclonePath, destFolder)
+    if (link) {
+        echo "[OK] GDrive folder link: ${link}"
+    } else {
+        echo "[WARN] No GDrive folder link generated - sidebar folder link will be missing"
+    }
+    env.GDRIVE_FOLDER_LINK = link ?: ''
+    return link
+}
+
 def uploadToGoogleDrive(Map config) {
     def buildPath = config.buildPath
     def destFolder = config.destFolder
@@ -6217,6 +6235,8 @@ def uploadToGoogleDrive(Map config) {
         def rcloneCheck = checkRclone(true)
         rclonePath = rcloneCheck.path ?: error("[ERROR] rclone not available")
     }
+
+    def gdriveFolderLink = _rcloneFolderLink(rclonePath, destFolder)
 
     bat """
         @echo off
@@ -6294,17 +6314,13 @@ for %%f in (*.apk *.aab *.ipa *.nsp) do (
         echo "[WARN] No GDrive file link generated - sidebar download link will be missing"
     }
 
-    def gdriveFolderLink = rcloneLink(destFolder)
-    if (gdriveFolderLink) {
-        echo "[OK] GDrive folder link: ${gdriveFolderLink}"
-    } else {
-        echo "[WARN] No GDrive folder link generated - sidebar folder link will be missing"
-    }
-
     // Switch builds may only have .nspd directories (no single .nsp file)
     if (!fileName && env.PLATFORM == 'Switch' && gdriveFolderLink) {
         common.addDriveArtifactBadge('nspd', gdriveFolderLink)
     }
+
+    // Tell Slack now - the message only needs the links, and both are in env at this point.
+    common.updateUploadStatus('gdrive', 'done')
 
     def fileType = fileName ? fileName.substring(fileName.lastIndexOf('.') + 1).toUpperCase() : 'APK'
     def fileIcon = null
@@ -6313,9 +6329,6 @@ for %%f in (*.apk *.aab *.ipa *.nsp) do (
     }
 
     common.addGoogleDriveLinks(gdriveFolderLink, fileLink, fileType, fileIcon)
-
-    env.GDRIVE_FOLDER_LINK = gdriveFolderLink ?: ''
-    common.updateUploadStatus('gdrive', 'done')
 
     return [folderLink: gdriveFolderLink, fileLink: fileLink, fileName: fileName]
 }
@@ -6338,6 +6351,8 @@ def uploadFolderToGoogleDrive(Map config) {
         def rcloneCheck = checkRclone(true)
         rclonePath = rcloneCheck.path ?: error("[ERROR] rclone not available")
     }
+
+    def folderLink = _rcloneFolderLink(rclonePath, destFolder)
 
     bat """
         @echo off
@@ -6389,13 +6404,6 @@ for %%f in (${packageGlobs}) do (
         }
     }
 
-    def folderLink = _rcloneLink(rclonePath, destFolder)
-    if (folderLink) {
-        echo "[OK] GDrive folder link: ${folderLink}"
-    } else {
-        echo "[WARN] No GDrive folder link generated - sidebar folder link will be missing"
-    }
-
     def fileType = 'Folder'
     if (fileLink) {
         fileType = fileName.substring(fileName.lastIndexOf('.') + 1).toUpperCase()
@@ -6406,10 +6414,10 @@ for %%f in (${packageGlobs}) do (
         common.addDriveArtifactBadge('build', folderLink)
     }
 
-    common.addGoogleDriveLinks(folderLink, fileLink, fileType, null)
-
-    env.GDRIVE_FOLDER_LINK = folderLink ?: ''
+    // Tell Slack now - the message only needs the links, and both are in env at this point.
     common.updateUploadStatus('gdrive', 'done')
+
+    common.addGoogleDriveLinks(folderLink, fileLink, fileType, null)
 
     return [folderLink: folderLink, fileLink: fileLink, fileName: fileName]
 }
