@@ -1518,7 +1518,10 @@ def getPerStageLogs(int linesPerStage = 1000, String onlyStage = null) {
  */
 def getStageLogsFromRawLog(String stageName, int maxLines = 5000) {
     try {
-        def logLines = currentBuild.rawBuild.getLog(50000)
+        // The WHOLE log: Run.getLog(n) returns the LAST n lines, and a Unity
+        // build's console runs well past 50k lines, which left 'Prepare' and
+        // 'Unity Build' outside the window and reported them as "not found".
+        def logLines = currentBuild.rawBuild.getLog(Integer.MAX_VALUE)
         def stageStart = -1
         def stageEnd = -1
         def depth = 0
@@ -1546,7 +1549,17 @@ def getStageLogsFromRawLog(String stageName, int maxLines = 5000) {
         }
 
         if (stageStart == -1) {
-            echo "[ERROR] getStageLogsFromRawLog: Stage '${stageName}' not found in raw log — FAILED_STAGE name doesn't match any [Pipeline] { (StageName) marker. This needs fixing."
+            // Say which it is: a name that matches no stage marker (fix the
+            // caller's FAILED_STAGE) vs a marker the log genuinely lacks.
+            def markers = []
+            for (int i = 0; i < logLines.size(); i++) {
+                def at = logLines[i].indexOf("[Pipeline] { (")
+                if (at < 0) continue
+                def end = logLines[i].lastIndexOf(")")
+                def name = end > at ? logLines[i].substring(at + 14, end) : logLines[i]
+                if (!markers.contains(name)) markers.add(name)
+            }
+            echo "[ERROR] getStageLogsFromRawLog: Stage '${stageName}' not found among ${logLines.size()} log lines. Stage markers present: ${markers ?: '(none)'}. FAILED_STAGE must match one of them exactly."
             return null
         }
 
