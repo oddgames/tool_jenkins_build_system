@@ -1650,6 +1650,22 @@ def extractErrorLines(List lines) {
         def isError = errorPatterns.any { pattern -> line =~ pattern }
         if (isError) {
             out << line
+            // "Building X failed with output:" (Bee/IL2CPP/NSS/linker) announces a block of tool
+            // output whose lines look nothing like errors, so the continuation rules below drop the
+            // actual reason and the report ends at the colon. Take the whole block: up to the next
+            // log entry (a "[Pipeline]" / "[Tag]" line), capped at 150 lines.
+            if (line =~ /(?i)with output:\s*$/) {
+                int j = i + 1
+                int captured = 0
+                while (j < n && captured < 150 && !(lines[j] =~ /^\[(Pipeline|[A-Za-z]+\.[A-Za-z]+|INFO|WARN|ERROR|OK)\b/)) {
+                    out << lines[j]
+                    j++
+                    captured++
+                }
+                if (j < n && captured >= 150) out << "... (tool output truncated at 150 lines - see the console log)"
+                i = j - 1
+                continue
+            }
             // Grab following continuation lines: stack traces, or Gradle detail lines
             // ("> ...", "* ...", indented "Suggestion:"/"or ..." hints).
             for (int j = i + 1; j < n && j < i + 20; j++) {
