@@ -199,6 +199,30 @@ local share, submit manually through the platform portal. No automated store upl
 - Retries: `common.classifySteamFailure()` splits transient failures (connection drops, `Timeout`/`Busy` EResults — retried) from rejections (retried never). Retrying a rejection is pure waste: every attempt re-scans the content root **and creates another duplicate build on Steamworks**.
 - On failure the pipeline dumps the tail of SteamCMD's own `logs/content_log.txt` (the real reason; the console only says `Failure`) and, when a branch is suspected, lists the app's actual branches via `getSteamBranches()` (app info calls the default branch `public`).
 
+## Google Drive Uploads (rclone)
+
+`uploadToGoogleDrive()` / `uploadFolderToGoogleDrive()` shell out to rclone with the `rclone`
+file credential as `--config`.
+
+- **The remote MUST carry its own `client_id`/`client_secret`** (or a service account). Without
+  one, rclone authenticates through its built-in default OAuth client, Google Cloud project
+  **202264815644**, whose Drive API quota is shared by every rclone user worldwide. When that pool is
+  busy every request fails with `403 ... Quota exceeded for quota metric 'Queries' ... consumer
+  'project_number:202264815644'`, and nothing on our side can free it; rclone.org/drive also says the
+  shared client is being retired during 2026. `preflightRclone()` checks the config (yes/no only,
+  the file is a secret), warns at Startup, and exports `env.RCLONE_OWN_CLIENT`. Changing the
+  client means re-authorising the remote (`rclone config reconnect <remote>:`) — the token is bound
+  to the client — then updating the Jenkins credential.
+- **Retries re-send the whole file.** rclone's `operations.Copy` restarts the transfer from byte 0
+  on every low-level retry, so the defaults (`--retries 3` × `--low-level-retries 10`) turned one
+  ~630 MiB IPA into 19 GiB of uploads against a quota that retrying cannot fix. The uploads run
+  with `--retries 3 --retries-sleep 60s --low-level-retries 3` (the sleep lets a per-minute window
+  reset).
+- rclone's log goes to `ARTIFACT_PATH/rclone_upload.log` (archived); `--progress` keeps the console
+  live. On failure `common.failRcloneUpload()` prints the ERROR/NOTICE lines once (rclone repeats
+  Google's JSON blob per attempt) and fails the stage with `classifyRcloneFailure()`'s one-line
+  verdict (shared-client quota, own-client rate limit, storage full, token revoked, folder missing).
+
 ## Build Badges: Live Status + Local Artifact Links
 
 The build-history sidebar only renders badges and the description, so badges are the only way a

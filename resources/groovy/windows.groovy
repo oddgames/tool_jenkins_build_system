@@ -3098,6 +3098,9 @@ def preflightRclone() {
             "${env.RCLONE_PATH}" --config "%RCLONE_CONFIG%" about "%RCLONE_REMOTE%" >nul || exit /b 1
             echo rclone authenticated
         """
+        // Own OAuth client or service account? Only a yes/no leaves the shell - the file is a secret.
+        def ownClient = bat(script: '@findstr /r /c:"^client_id *= *[^ ]" /c:"^service_account_[a-z]* *= *[^ ]" "%RCLONE_CONFIG%" >nul 2>&1', returnStatus: true) == 0
+        common.reportRcloneClient(ownClient)
     }
 }
 
@@ -6238,10 +6241,18 @@ def uploadToGoogleDrive(Map config) {
 
     def gdriveFolderLink = _rcloneFolderLink(rclonePath, destFolder)
 
-    bat """
+    // rclone re-sends the WHOLE file on every low-level retry (operations.Copy), not just the failed
+    // chunk: the defaults (3 passes x 10) turned one ~630 MiB IPA into 19 GiB of uploads against a
+    // quota that retrying cannot free. 3 x 3 with a minute between passes still covers a real
+    // transient and lets a per-minute quota window reset. Errors go to the log file (--progress
+    // keeps the console live); on failure failRcloneUpload() prints and explains them.
+    def rcloneLog = "${env.ARTIFACT_PATH ?: env.WORKSPACE}\\rclone_upload.log"  // under artifacts/ so post{always} archives it
+    def status = bat(returnStatus: true, script: """
         @echo off
         set DEST_PATH=%RCLONE_REMOTE%/${destFolder}
         echo Uploading to: %DEST_PATH%
+        for %%d in ("${rcloneLog}") do if not exist "%%~dpd" mkdir "%%~dpd"
+        if exist "${rcloneLog}" del /q "${rcloneLog}"
 
         cd /d "${buildPath}"
         for %%f in (*.apk *.aab *.ipa *.nsp) do (
@@ -6262,7 +6273,7 @@ def uploadToGoogleDrive(Map config) {
             echo [ERROR] Expected: *.apk, *.aab, *.ipa, *.nsp, or *.nspd directory
             echo [ERROR] Directory contents:
             dir /s /b "${buildPath}" || echo [ERROR] Directory does not exist or is empty
-            exit /b 1
+            exit /b 3
         )
 
         echo Uploading: %FILE%
@@ -6274,15 +6285,21 @@ def uploadToGoogleDrive(Map config) {
             --drive-chunk-size=256M ^
             --drive-upload-cutoff=256M ^
             --use-mmap ^
+            --retries=3 ^
+            --retries-sleep=60s ^
+            --low-level-retries=3 ^
             --stats=10s ^
             --stats-one-line ^
+            --log-file "${rcloneLog}" ^
             -v
         if errorlevel 1 exit /b 1
 
         :skip_file_upload
 
         echo [INFO] Upload complete
-    """
+    """)
+    if (status == 3) error("No build file found in output directory: ${buildPath}")
+    if (status != 0) common.failRcloneUpload(rcloneLog)
 
     // Multi-line bat script to get first matching build file - goto :eof doesn't work in single-line for loops
     // Order must match the rclone upload loop above (*.apk first)
@@ -6354,19 +6371,23 @@ def uploadFolderToGoogleDrive(Map config) {
 
     def folderLink = _rcloneFolderLink(rclonePath, destFolder)
 
-    bat """
+    // Same retry cap and log file as uploadToGoogleDrive() - see the comment there.
+    def rcloneLog = "${env.ARTIFACT_PATH ?: env.WORKSPACE}\\rclone_upload.log"  // under artifacts/ so post{always} archives it
+    def status = bat(returnStatus: true, script: """
         @echo off
         if not exist "${buildPath}" (
             echo [ERROR] Build output directory does not exist: ${buildPath}
-            exit /b 1
+            exit /b 3
         )
 
         set "HAS_CONTENT="
         for /f %%i in ('dir /b "${buildPath}" 2^>nul') do set "HAS_CONTENT=1"
         if not defined HAS_CONTENT (
             echo [ERROR] Build output directory is empty: ${buildPath}
-            exit /b 1
+            exit /b 3
         )
+        for %%d in ("${rcloneLog}") do if not exist "%%~dpd" mkdir "%%~dpd"
+        if exist "${rcloneLog}" del /q "${rcloneLog}"
 
         echo Uploading directory to: %RCLONE_REMOTE%/${destFolder}
         "${rclonePath}" copy "${buildPath}" "%RCLONE_REMOTE%/${destFolder}/" ^
@@ -6377,13 +6398,19 @@ def uploadFolderToGoogleDrive(Map config) {
             --drive-chunk-size=256M ^
             --drive-upload-cutoff=256M ^
             --use-mmap ^
+            --retries=3 ^
+            --retries-sleep=60s ^
+            --low-level-retries=3 ^
             --stats=10s ^
             --stats-one-line ^
+            --log-file "${rcloneLog}" ^
             -v
         if errorlevel 1 exit /b 1
 
         echo [INFO] Upload complete
-    """
+    """)
+    if (status == 3) error("Build output directory missing or empty: ${buildPath}")
+    if (status != 0) common.failRcloneUpload(rcloneLog)
 
     // Look for a submission package at the top level (goto :eof so only the first match is used)
     def fileName = bat(script: """@echo off

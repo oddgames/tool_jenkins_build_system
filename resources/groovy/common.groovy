@@ -1360,6 +1360,88 @@ def classifySteamFailure(String output, String setLive = '') {
 }
 
 /**
+ * Explain an rclone Google Drive failure from its log. rclone repeats Google's JSON error blob
+ * once per attempt, so the raw output buries the one line that matters.
+ *
+ * The 403 rateLimitExceeded case is worth naming precisely: consumer project 202264815644 is
+ * rclone's OWN default OAuth client (rcloneClientID in backend/drive/drive.go). A remote configured
+ * without client_id shares that project's Drive API quota with every rclone user on the internet,
+ * so the pipeline fails whenever that pool is busy, and nothing on our side can free it up.
+ * rclone.org/drive: "This shared client_id is being retired and will stop working during 2026."
+ */
+def classifyRcloneFailure(String output) {
+    def text = output ?: ''
+
+    if (text.contains('rateLimitExceeded') || text.contains('RATE_LIMIT_EXCEEDED') ||
+        text.contains('userRateLimitExceeded') || text.contains('Quota exceeded for quota metric')) {
+        def sharedClient = text.contains('project_number:202264815644') || env.RCLONE_OWN_CLIENT == 'false'
+        def hints = []
+        if (sharedClient) {
+            hints << "The rclone remote has no client_id, so it authenticates through rclone's shared default OAuth client (Google Cloud project 202264815644). Its Drive API quota is split between every rclone user worldwide; retrying only re-uploads the file into the same exhausted bucket."
+            hints << "Fix: in the ODD Google Cloud project enable the Google Drive API, create an OAuth client (type 'Desktop app'), then add client_id / client_secret to the remote in the 'rclone' Jenkins credential (rclone config file) and re-authorise it (rclone config reconnect <remote>: - the token is bound to the client). See https://rclone.org/drive/#making-your-own-client-id"
+        } else {
+            hints << 'Google Drive API per-minute quota exceeded on our own client. Check other jobs uploading at the same time, or raise the quota in the Google Cloud console.'
+        }
+        return [retryable: !sharedClient, summary: sharedClient
+            ? "Google Drive API quota exhausted on rclone's shared default client ID (project 202264815644)"
+            : 'Google Drive API rate limit exceeded', hints: hints]
+    }
+
+    if (text.contains('storageQuotaExceeded') || text.contains('The user\'s Drive storage quota has been exceeded')) {
+        return [retryable: false, summary: 'Google Drive storage is full',
+                hints: ['Free space in the Drive the rclone remote points at (or empty its trash) and re-run.']]
+    }
+
+    if (text.contains('invalid_grant') || text.contains('Token has been expired or revoked') ||
+        text.contains("couldn't fetch token") || text.contains('oauth2: cannot fetch token')) {
+        return [retryable: false, summary: 'rclone Google Drive token expired or revoked',
+                hints: ["Re-authorise the remote (rclone config reconnect <remote>:) and update the 'rclone' Jenkins credential with the new config file."]]
+    }
+
+    if (text.contains('directory not found') || text.contains("couldn't find root directory")) {
+        return [retryable: false, summary: 'rclone could not find the destination folder on Google Drive',
+                hints: ["Check RCLONE_REMOTE (${env.RCLONE_REMOTE ?: 'unset'}) still points at an existing folder the authorised account can see."]]
+    }
+
+    return [retryable: true, summary: 'rclone upload failed (see rclone log above)', hints: []]
+}
+
+/**
+ * Called from preflightRclone() with the result of "does the rclone config carry its own
+ * client_id or a service account?". Records it for classifyRcloneFailure() and warns up front,
+ * so a config still on the shared client is flagged at Startup, not after a failed upload.
+ */
+def reportRcloneClient(boolean ownClient) {
+    env.RCLONE_OWN_CLIENT = ownClient ? 'true' : 'false'
+    if (ownClient) {
+        echo '[OK] rclone remote uses its own Google OAuth client / service account'
+        return
+    }
+    echo "[WARN] rclone config has no client_id: Google Drive uploads run on rclone's SHARED default OAuth client (Google Cloud project 202264815644)."
+    echo "[WARN] That project's Drive API quota is split between every rclone user worldwide - uploads fail with '403 rateLimitExceeded' whenever the pool is busy, and rclone.org/drive says the shared client is being retired during 2026."
+    echo "[WARN] Fix: enable the Google Drive API in the ODD Google Cloud project, create an OAuth client (Desktop app), add client_id / client_secret to the remote in the 'rclone' Jenkins credential and re-authorise it (rclone config reconnect <remote>:). https://rclone.org/drive/#making-your-own-client-id"
+}
+
+/**
+ * Fail the upload stage from rclone's --log-file: print the lines that matter (ERROR/NOTICE/Failed,
+ * each once - rclone logs the same Google JSON blob per attempt), then error() with the
+ * classifier's one-line summary so the failure card says why instead of "script returned exit code 1".
+ */
+def failRcloneUpload(String logPath) {
+    def log = fileExists(logPath) ? readFile(logPath) : ''
+    def lines = log.readLines().findAll { it.contains('ERROR') || it.contains('NOTICE') || it.contains('Failed') }.unique().take(20)
+    if (lines) {
+        echo "--- rclone errors (${logPath}) ---\n" + lines.collect { it.length() > 400 ? it.take(400) + '...' : it }.join('\n')
+    } else if (!log) {
+        echo "[WARN] rclone wrote no log file at ${logPath}"
+    }
+    def failure = classifyRcloneFailure(log)
+    echo "[ERROR] ${failure.summary}"
+    failure.hints.each { echo "[HINT] ${it}" }
+    error(failure.summary)
+}
+
+/**
  * Print a classified Steam failure as a readable block in the console log.
  */
 def reportSteamFailure(Map failure, List branches = null) {

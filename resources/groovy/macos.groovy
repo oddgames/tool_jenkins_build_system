@@ -2196,6 +2196,9 @@ def preflightRclone() {
             "${env.RCLONE_PATH}" --config "\$RCLONE_CONFIG" about "\$RCLONE_REMOTE" >/dev/null || exit 1
             echo "rclone authenticated"
         """
+        // Own OAuth client or service account? Only a yes/no leaves the shell - the file is a secret.
+        def ownClient = sh(script: 'grep -Eq "^(client_id|service_account_(file|credentials))[[:space:]]*=[[:space:]]*[^[:space:]]" "$RCLONE_CONFIG"', returnStatus: true) == 0
+        common.reportRcloneClient(ownClient)
     }
 }
 
@@ -4189,9 +4192,16 @@ def uploadToGoogleDrive(Map config) {
     if (!gdriveFolderLink && rawFolderLink) echo "[WARN] rclone folder link output (no URL found):\n${rawFolderLink.take(500)}"
     env.GDRIVE_FOLDER_LINK = gdriveFolderLink ?: ''
 
-    sh """
+    // rclone re-sends the WHOLE file on every low-level retry (operations.Copy), not just the failed
+    // chunk: the defaults (3 passes x 10) turned one ~630 MiB IPA into 19 GiB of uploads against a
+    // quota that retrying cannot free. 3 x 3 with a minute between passes still covers a real
+    // transient and lets a per-minute quota window reset. Errors go to the log file (--progress
+    // keeps the console live); on failure failRcloneUpload() prints and explains them.
+    def rcloneLog = "${env.ARTIFACT_PATH ?: env.WORKSPACE}/rclone_upload.log"  // under artifacts/ so post{always} archives it
+    def status = sh(returnStatus: true, script: """
         DEST_PATH="\${RCLONE_REMOTE}/${destFolder}"
         echo "Uploading to: \$DEST_PATH"
+        mkdir -p "\$(dirname "${rcloneLog}")" && rm -f "${rcloneLog}"
 
         cd "${buildPath}"
         FILE=\$(ls *.ipa | head -1)
@@ -4209,10 +4219,15 @@ def uploadToGoogleDrive(Map config) {
             --buffer-size=256M \\
             --drive-chunk-size=256M \\
             --drive-upload-cutoff=256M \\
+            --retries=3 \\
+            --retries-sleep=60s \\
+            --low-level-retries=3 \\
             --stats=10s \\
             --stats-one-line \\
+            --log-file "${rcloneLog}" \\
             -v
-    """
+    """)
+    if (status != 0) common.failRcloneUpload(rcloneLog)
 
     def fileName = sh(script: "cd \"${buildPath}\" && ls *.ipa | head -1", returnStdout: true).trim()
     def fileLink = ""
