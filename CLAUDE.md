@@ -158,6 +158,26 @@ Use **specific version IDs**, not bare prefix names:
 - **Steam Linux building Windows exe**: Missing `linux-il2cpp` module causes Unity to silently fall back to Windows — added `validateLinuxBuildSupport()` preflight to `steam-linux.jenkinsfile`
 - **Steam "Failed to commit build ... : Failure"**: the `SetLive` branch in the VDF must already exist on the app. The content upload succeeds and Steam still creates the build — only the commit RPC is rejected — so the build shows up in Steamworks while the pipeline reports failure. See below.
 
+## Xcode Auto-Install (`XCODE_VERSION`)
+
+`preflightXcode()` (macos.groovy) picks the Xcode via `DEVELOPER_DIR`; when `XCODE_VERSION` isn't
+installed, `installXcodeFromShare()` installs it from a **`.xip` on the build share** — never from Apple.
+
+- **Online `xcodes install` cannot work on an agent**: it reads the Apple ID password from the login
+  keychain, locked outside a GUI session (`OSStatus error:[-25308] User interaction is not allowed`),
+  then Apple's sign-in returns HTML (`not valid JSON ... Unexpected character '<'`), and 2FA would
+  want a typed code anyway. Don't reintroduce it.
+- **Per new version, once, by hand**: download the `.xip` from developer.apple.com/download/all and
+  drop it in `<LOCAL_SHARE_PATH>/_xcode/` (`\\odd-jenkins\builds\_xcode\`) keeping Apple's name
+  (`Xcode_26.xip`, `Xcode_26.0.1.xip`; Apple drops trailing `.0`). Job env `XCODE_XIP_SHARE_DIR`
+  overrides the folder. `XCODE_VERSION=26` takes the newest non-beta `Xcode_26.*.xip`.
+- The `.xip` is copied to the agent first — `xcodes` trashes the `.xip` after installing, which on the
+  SMB mount would delete the share's copy. Install is `xcodes install <v> --path <xip> --no-superuser`
+  under a per-agent `lock`, with a free-space check (~5× the `.xip`).
+- **License**: a new Xcode won't build until `xcodebuild -license accept` runs as root. The pipeline
+  tries `sudo -n` and only warns if sudo wants a password. Fix for every future Xcode:
+  `<agent-user> ALL=(root) NOPASSWD: /Applications/Xcode*.app/Contents/Developer/usr/bin/xcodebuild`.
+
 ## Console Platforms (Xbox / PS5)
 
 Both follow the Switch pattern: build on a Windows agent, deliver the output to Google Drive + the

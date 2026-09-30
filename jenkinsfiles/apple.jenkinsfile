@@ -12,7 +12,7 @@
  *   // ENTITLEMENTS_FILENAME  - Entitlements file name (e.g., "App.entitlements") - optional, default: App.entitlements
  *   APPLE_TEAM_ID          - Apple Developer Team ID (e.g., "52TRASNQ85")
  *   RCLONE_REMOTE          - rclone remote path (e.g., "drive:Builds")
- *   XCODE_VERSION          - Xcode major version to use (e.g., "16"). Selects /Applications/Xcode_16.app. Auto-installs via xcodes if missing. Optional - uses system default if not set.
+ *   XCODE_VERSION          - Xcode major version to use (e.g., "16"). Selects /Applications/Xcode_16.app. If missing, auto-installs from Xcode_<ver>.xip in <LOCAL_SHARE_PATH>/_xcode (XCODE_XIP_SHARE_DIR overrides). Optional - uses system default if not set.
  *
  * Required Jenkins Credentials:
  *   unity-credentials      - Username/password for Unity license
@@ -51,6 +51,7 @@ pipeline {
             description: 'Clean Unity cache dirs before build (select multiple). Provisioning Profiles=Purge ~/Library/MobileDevice/Provisioning Profiles so fresh ones are re-fetched (fixes stale/expired signing profiles). Xcode Archives=Delete ~/Library/Developer/Xcode/Archives. DerivedData=Delete Xcode DerivedData. Verify Workspace=Force re-check all tracked files against server. Clear Library=Delete entire Library folder. Clear Workspace=Wipe entire Jenkins workspace and start from scratch. Force Preflight=Re-run all preflight checks even if they passed recently'
         )
         booleanParam(name: 'FORCE_UPLOAD', defaultValue: false, description: 'Upload to store (auto for Release on /main)')
+        booleanParam(name: 'LOCAL_ONLY', defaultValue: false, description: 'Skip every internet upload (Google Drive, store, Crashlytics). The build still runs and is copied to the local share.')
         booleanParam(name: 'WARMUP', defaultValue: false, description: 'Cache-warming build: runs full build but skips uploads and notifications')
         text(name: 'PREBUILD_SCRIPT', defaultValue: '', description: 'One-off bash to run on the agent after checkout, before the build starts. Use for agent-only fixes a clean repo can\'t make — e.g. delete stray generated files or a stale Library/Bee output. Leave blank for normal builds (resets to blank each run). Best-effort: a failure warns but does not abort unless PREBUILD_FAIL_ON_ERROR=true is set in the job environment.')
     }
@@ -539,7 +540,7 @@ pipeline {
                         appIcon: env.APP_ICON,
                         branch: env.BRANCH,
                         changesetId: env.CHANGESET_ID,
-                        uploads: uploads
+                        uploads: params.LOCAL_ONLY ? uploads.findAll { it == 'local' } : uploads
                     )
                 }
             }
@@ -574,7 +575,7 @@ pipeline {
 
                 stage('Google Drive Upload') {
                     when {
-                        expression { !params.WARMUP }
+                        expression { !params.WARMUP && !params.LOCAL_ONLY }
                     }
                     steps {
                         script {
@@ -594,7 +595,7 @@ pipeline {
 
                 stage('Crashlytics Symbols') {
                     when {
-                        expression { !params.WARMUP && env.UPLOAD_CRASHLYTICS_SYMBOLS == 'true' && ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) }
+                        expression { !params.WARMUP && env.UPLOAD_CRASHLYTICS_SYMBOLS == 'true' && ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) && !params.LOCAL_ONLY }
                     }
                     steps {
                         script {
@@ -608,7 +609,7 @@ pipeline {
 
                 stage('TestFlight Upload') {
                     when {
-                        expression { !params.WARMUP && ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) }
+                        expression { !params.WARMUP && ((params.BUILD_TYPE == 'Release' && env.BRANCH == '/main') || params.FORCE_UPLOAD) && !params.LOCAL_ONLY }
                     }
                     steps {
                         script {

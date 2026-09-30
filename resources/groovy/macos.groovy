@@ -2266,79 +2266,60 @@ def preflightFastlane() {
 }
 
 def preflightXcode() {
-    // If XCODE_VERSION is set (e.g. "16"), find matching Xcode and set DEVELOPER_DIR
+    // If XCODE_VERSION is set (e.g. "16", "26.0"), find matching Xcode and set DEVELOPER_DIR
     // Uses DEVELOPER_DIR (per-process, no sudo) instead of xcode-select -s (global, requires sudo)
-    // Xcode must be pre-installed on the agent: brew install xcodes && xcodes install 16.2
+    // A missing version is installed from a .xip on the build share - see installXcodeFromShare()
     def requiredVersion = env.XCODE_VERSION?.trim()
 
     if (requiredVersion) {
-        // Find installed Xcode matching the requested version
-        // Supports xcodes naming (Xcode-16.2.0.app) and manual naming (Xcode_16.app, Xcode_16.2.app)
-        def xcodePath = sh(
-            script: """
-                for pattern in "/Applications/Xcode-${requiredVersion}"*.app "/Applications/Xcode_${requiredVersion}"*.app; do
-                    if [ -d "\$pattern" ]; then
-                        echo "\$pattern"
-                        exit 0
-                    fi
-                done
-                # Fall back to Xcode.app if its version matches (e.g. App Store install)
-                if [ -d "/Applications/Xcode.app" ]; then
-                    XCODE_APP_VER=\$(/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -version | awk '/^Xcode /{print \$2}')
-                    if echo "\$XCODE_APP_VER" | grep -q "^${requiredVersion}"; then
-                        echo "/Applications/Xcode.app"
-                        exit 0
-                    fi
-                fi
-                echo ""
-            """,
-            returnStdout: true
-        ).trim()
+        def xcodePath = _findInstalledXcode(requiredVersion)
 
         if (!xcodePath) {
-            echo "[INFO] Xcode ${requiredVersion} not found - attempting auto-install via xcodes..."
-            def xcodesAvailable = sh(script: 'command -v xcodes >/dev/null 2>&1 && echo yes || echo no', returnStdout: true).trim()
-            if (xcodesAvailable == 'no') {
-                sh 'brew install xcodes || true'
+            // One install per agent at a time: two jobs would unxip 10+ GB into the same /Applications path
+            lock(resource: "xcode-install-${env.NODE_NAME}") {
+                // Whoever held the lock may have just installed it
+                xcodePath = _findInstalledXcode(requiredVersion)
+                if (!xcodePath) {
+                    installXcodeFromShare(requiredVersion)
+                    xcodePath = _findInstalledXcode(requiredVersion)
+                }
             }
-            sh "xcodes install ${requiredVersion} --select"
-            // Re-probe after install
-            xcodePath = sh(
-                script: """
-                    for pattern in "/Applications/Xcode-${requiredVersion}"*.app "/Applications/Xcode_${requiredVersion}"*.app; do
-                        if [ -d "\$pattern" ]; then echo "\$pattern"; exit 0; fi
-                    done
-                    echo ""
-                """,
-                returnStdout: true
-            ).trim()
             if (!xcodePath) {
-                def installed = sh(script: 'ls -d /Applications/Xcode*.app || echo "(none found)"', returnStdout: true).trim()
-                error """[ERROR] Xcode ${requiredVersion} not found even after install attempt
+                def installed = sh(script: 'ls -d /Applications/Xcode*.app 2>/dev/null || echo "(none found)"', returnStdout: true).trim()
+                error """[ERROR] Xcode ${requiredVersion} still not found after installing it - the .xip on the share is probably a different version
 
-Available Xcode installations:
-${installed}
-
-[FIX] Install manually on the build agent:
-  brew install xcodes
-  xcodes install ${requiredVersion}"""
+Installed Xcodes on this agent:
+${installed}"""
             }
         }
 
         env.DEVELOPER_DIR = "${xcodePath}/Contents/Developer"
         echo "[OK] DEVELOPER_DIR=${env.DEVELOPER_DIR}"
 
+        // sudo -n: never wait for a password (there is no tty). The explicit xcodebuild path keeps
+        // DEVELOPER_DIR's Xcode under sudo and is what the NOPASSWD sudoers rule below matches.
         sh """
             export DEVELOPER_DIR="${env.DEVELOPER_DIR}"
+            XCB="\$DEVELOPER_DIR/usr/bin/xcodebuild"
             xcodebuild -version
 
+            # A freshly installed Xcode refuses to build until its license is accepted (root only)
+            if ! xcodebuild -license check >/dev/null 2>&1; then
+                echo "[INFO] Accepting the Xcode license..."
+                sudo -n "\$XCB" -license accept || {
+                    echo "[WARN] Could not accept the Xcode license: sudo needs a password on this agent."
+                    echo "[WARN] Builds will fail with 'You have not agreed to the Xcode license agreements'."
+                    echo "[FIX]  Once, on the agent: sudo \$XCB -license accept"
+                    echo "[FIX]  Or for every future Xcode (sudo visudo): \$(whoami) ALL=(root) NOPASSWD: /Applications/Xcode*.app/Contents/Developer/usr/bin/xcodebuild"
+                }
+            fi
+
             # Run first-launch setup if needed (installs device support, simulator runtimes)
-            # Use sudo -E to preserve DEVELOPER_DIR, otherwise sudo uses xcode-select default
-            xcodebuild -runFirstLaunch || sudo -E xcodebuild -runFirstLaunch || true
+            xcodebuild -runFirstLaunch || sudo -n "\$XCB" -runFirstLaunch || true
 
             # Ensure iOS platform is installed (required for generic/platform=iOS destination)
             echo "[INFO] Ensuring iOS platform is installed..."
-            xcodebuild -downloadPlatform iOS || sudo -E xcodebuild -downloadPlatform iOS || true
+            xcodebuild -downloadPlatform iOS || sudo -n "\$XCB" -downloadPlatform iOS || true
         """
     } else {
         sh '''
@@ -2349,6 +2330,144 @@ ${installed}
             xcodebuild -downloadPlatform iOS || sudo xcodebuild -downloadPlatform iOS || true
             echo "[OK] Xcode available (no XCODE_VERSION specified, using system default)"
         '''
+    }
+}
+
+// Path of an installed Xcode matching `version`, or '' if there is none.
+// Supports xcodes naming (Xcode-16.2.0.app), manual naming (Xcode_16.app, Xcode_16.2.app),
+// and a plain Xcode.app whose version matches (App Store install).
+def _findInstalledXcode(String version) {
+    return sh(
+        script: """
+            for pattern in "/Applications/Xcode-${version}"*.app "/Applications/Xcode_${version}"*.app; do
+                if [ -d "\$pattern" ]; then
+                    echo "\$pattern"
+                    exit 0
+                fi
+            done
+            if [ -d "/Applications/Xcode.app" ]; then
+                XCODE_APP_VER=\$(/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -version | awk '/^Xcode /{print \$2}')
+                if echo "\$XCODE_APP_VER" | grep -q "^${version}"; then
+                    echo "/Applications/Xcode.app"
+                    exit 0
+                fi
+            fi
+            echo ""
+        """,
+        returnStdout: true
+    ).trim()
+}
+
+// Installs Xcode `version` from a .xip on the build share, with no Apple ID involved.
+//
+// Apple only serves Xcode to a signed-in Apple ID with 2FA, which a Jenkins agent can't do:
+// `xcodes install 26.0` reads the password from the login keychain, which is locked outside a GUI
+// session (OSStatus -25308 "User interaction is not allowed"), then Apple's sign-in answers with an
+// HTML page ("not valid JSON ... Unexpected character '<'"), and a 2FA code could never be typed
+// anyway. So the .xip is downloaded once per version, by hand, from
+// https://developer.apple.com/download/all/ and dropped in
+//     <LOCAL_SHARE_PATH>/_xcode/            (e.g. //odd-jenkins/builds/_xcode/Xcode_26.xip)
+// keeping Apple's file name. Job env XCODE_XIP_SHARE_DIR overrides the folder. Every agent then
+// installs from there: `xcodes install --path` unxips and checks Apple's signature without signing in.
+def installXcodeFromShare(String version) {
+    def sharePath = env.LOCAL_SHARE_PATH ?: '\\\\odd-jenkins\\builds'
+    def xipDir = (env.XCODE_XIP_SHARE_DIR?.trim() ?: '_xcode').replaceAll('^[/\\\\]+|[/\\\\]+$', '').replace('\\', '/')
+    def shareHostPath = sharePath.replace('\\', '/').replaceFirst('^/+', '')   // odd-jenkins/builds
+    def uncDir = "${sharePath}\\${xipDir.replace('/', '\\')}"
+    // Not /tmp/local_builds: uploadToLocalShare() unmounts that under a concurrent job
+    def mountPoint = '/tmp/xcode_share'
+    def stagingDir = "${env.WORKSPACE_TMP ?: '/tmp'}/xcode_xip"
+
+    echo "[INFO] Xcode ${version} is not installed on ${env.NODE_NAME} - installing from ${uncDir}"
+
+    // Pick the .xip and copy it local: xcodes moves the .xip to the Trash after installing, which on
+    // the SMB mount would delete the share's copy - and unxipping over SMB is slow anyway.
+    // Log lines go to stderr; the last stdout line is the local .xip path.
+    def localXip = sh(
+        script: """
+            set -e
+            VERSION="${version}"
+            # Apple drops trailing .0s: 16.0 ships as Xcode_16.xip, 26.0.1 as Xcode_26.0.1.xip
+            SHORT=\$(echo "\$VERSION" | sed -E 's/(\\.0)+\$//')
+
+            MOUNTED_HERE=no
+            cleanup() { if [ "\$MOUNTED_HERE" = yes ]; then umount "${mountPoint}" >/dev/null 2>&1 || true; fi; }
+            trap cleanup EXIT
+
+            # macOS won't mount the same share twice for one user ("File exists") - reuse a live mount
+            EXISTING=\$(mount | grep -i "@${shareHostPath} on " | sed -E 's/.* on (.*) \\(smbfs.*/\\1/' | head -1)
+            if [ -n "\$EXISTING" ] && [ -d "\$EXISTING/${xipDir}" ]; then
+                MOUNT_DIR="\$EXISTING"
+            else
+                mkdir -p "${mountPoint}"
+                if mount | grep -q " on ${mountPoint} "; then umount "${mountPoint}" || true; fi
+                mount_smbfs "//BUILD:build@${shareHostPath}" "${mountPoint}" >&2 || {
+                    echo "[ERROR] Could not mount //${shareHostPath} to look for the Xcode .xip" >&2
+                    exit 1
+                }
+                MOUNT_DIR="${mountPoint}"
+                MOUNTED_HERE=yes
+            fi
+
+            SRC_DIR="\$MOUNT_DIR/${xipDir}"
+            XIP=""
+            for name in "Xcode_\$VERSION.xip" "Xcode_\$SHORT.xip"; do
+                if [ -f "\$SRC_DIR/\$name" ]; then XIP="\$SRC_DIR/\$name"; break; fi
+            done
+            if [ -z "\$XIP" ]; then
+                # "26" -> newest Xcode_26.*.xip; betas/RCs only when asked for by exact name
+                XIP=\$(ls "\$SRC_DIR"/Xcode_"\$VERSION".*.xip 2>/dev/null | grep -viE 'beta|_rc' | sort -V | tail -1 || true)
+            fi
+            if [ -z "\$XIP" ]; then
+                echo "[ERROR] No Xcode_\$VERSION*.xip in ${uncDir}. It has:" >&2
+                ls -la "\$SRC_DIR" >&2 2>/dev/null || echo "  (folder does not exist)" >&2
+                echo "[FIX] Download Xcode \$VERSION from https://developer.apple.com/download/all/ (signed in," >&2
+                echo "      in a browser) and put the .xip in ${uncDir} with Apple's file name." >&2
+                echo "      Every Mac agent then installs it on its next build." >&2
+                exit 2
+            fi
+
+            rm -rf "${stagingDir}"
+            mkdir -p "${stagingDir}"
+            echo "[INFO] Copying \$(basename "\$XIP") (\$(du -h "\$XIP" | cut -f1)) to the agent..." >&2
+            cp "\$XIP" "${stagingDir}/"
+            echo "${stagingDir}/\$(basename "\$XIP")"
+        """,
+        returnStdout: true
+    ).trim().readLines().last()
+
+    try {
+        sh """
+            set -e
+            command -v xcodes >/dev/null 2>&1 || brew install xcodes
+
+            # The .xip expands to ~3-4x its size next to itself before moving into /Applications
+            XIP_GB=\$(( \$(stat -f %z "${localXip}") / 1073741824 + 1 ))
+            NEED_GB=\$(( XIP_GB * 5 ))
+            FREE_GB=\$(df -g "${stagingDir}" | awk 'NR==2 {print \$4}')
+            if [ "\$FREE_GB" -lt "\$NEED_GB" ]; then
+                echo "[ERROR] Only \${FREE_GB} GB free on the agent; installing Xcode needs ~\${NEED_GB} GB."
+                echo "[FIX]  Delete Xcodes no job uses any more: ls -d /Applications/Xcode*.app"
+                exit 1
+            fi
+
+            # Version from Apple's file name: Xcode_26.0.1.xip -> 26.0.1, Xcode_26.1_beta_2.xip -> 26.1 beta 2
+            XVER=\$(basename "${localXip}" .xip | sed -e 's/^Xcode_//' -e 's/_/ /g')
+            echo "[INFO] Installing Xcode \$XVER - unxipping takes 10-20 minutes..."
+            # --no-superuser: skip the steps that want sudo (license, components) - preflightXcode()
+            #   does those with sudo -n. No --select: that's xcode-select -s (sudo); DEVELOPER_DIR picks it.
+            xcodes install "\$XVER" --path "${localXip}" --no-superuser --empty-trash
+        """
+    } catch (Exception e) {
+        def installed = sh(script: 'ls -d /Applications/Xcode*.app 2>/dev/null || echo "(none found)"', returnStdout: true).trim()
+        error """[ERROR] Installing Xcode ${version} from ${uncDir} failed: ${e.message}
+
+Installed Xcodes on this agent:
+${installed}
+
+[FIX] See the output above. If /Applications isn't writable, the agent's user needs to be an admin."""
+    } finally {
+        sh "rm -rf '${stagingDir}'"
     }
 }
 
@@ -2419,6 +2538,29 @@ source 'https://cdn.cocoapods.org/'\\\\
         PODFILE_HASH=""
         [ -f Podfile ] && PODFILE_HASH=\$(shasum Podfile | awk '{print \$1}')
 
+        # rm -rf Pods can fail with only "Directory not empty": some other process is still writing
+        # into it while it's deleted (a leftover pod install - e.g. EDM4U's from the Unity build, or an
+        # aborted build's). Retry, name the writer, and if it still won't go, move it aside so this
+        # install gets a clean Pods/ anyway - a rename works even while the writer is running.
+        remove_dir() {
+            [ -e "\$1" ] || return 0
+            for attempt in 1 2 3; do
+                rm -rf "\$1" 2>/dev/null && return 0
+                sleep 3
+            done
+            echo "[WARN] Could not delete \$1 - another process is writing into it:"
+            lsof +D "\$1" 2>/dev/null | head -20 || true
+            ps -axo pid,etime,command | grep -iE '[p]od install|[C]ocoaPods|[U]nity' | head -10 || true
+            STALE="\$1.stale.\$\$"
+            mv "\$1" "\$STALE" || return 1
+            echo "[WARN] Moved it to \$STALE; the install continues with a fresh \$1"
+            rm -rf "\$STALE" 2>/dev/null || true
+        }
+        # Leftovers from an earlier remove_dir() that couldn't delete them either
+        for stale in Pods.stale.*; do
+            if [ -e "\$stale" ]; then rm -rf "\$stale" 2>/dev/null || true; fi
+        done
+
         CACHE_HIT="no"
         save_pods_cache() {
             # Nothing to do on a cache hit (Pods are already identical) or with no Podfile
@@ -2435,14 +2577,14 @@ source 'https://cdn.cocoapods.org/'\\\\
 
         if [ -n "\$PODFILE_HASH" ] && [ -f "\$CACHE_DIR/Podfile.sha" ] && [ -d "\$CACHE_DIR/Pods" ] && [ -f "\$CACHE_DIR/Podfile.lock" ] && [ "\$(cat "\$CACHE_DIR/Podfile.sha")" = "\$PODFILE_HASH" ]; then
             echo "[CACHE] Podfile unchanged — restoring Pods/ + Podfile.lock for an incremental install"
-            rm -rf Pods
+            remove_dir Pods
             cp -R "\$CACHE_DIR/Pods" Pods
             cp "\$CACHE_DIR/Podfile.lock" Podfile.lock
             CACHE_HIT="yes"
         else
             echo "[CACHE] No usable Pods cache (miss or Podfile changed) — clean install"
             rm -f Podfile.lock
-            rm -rf Pods
+            remove_dir Pods
         fi
         rm -rf *.xcworkspace
 
@@ -2486,7 +2628,7 @@ source 'https://cdn.cocoapods.org/'\\\\
         echo "[PURGE] Purging cache and retrying..."
         \$POD_BIN cache clean --all || true
         rm -rf ~/Library/Caches/CocoaPods
-        rm -rf Pods
+        remove_dir Pods
         rm -f Podfile.lock
         \$POD_BIN repo update || true
         echo "[WAIT] Waiting 5 minutes before final attempt (CDN recovery)..."

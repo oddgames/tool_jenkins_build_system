@@ -707,11 +707,18 @@ def addBuildWarning(String warning) { common.addBuildWarning(warning) }
 private def ensureInitialized() {
     if (platform != null) return
 
-    try {
-        init()
-    } catch (Exception e) {
-        // init() may fail if called outside node context (isUnix() unavailable)
-        echo "[WARN] Could not initialize build utilities: ${e.message}"
+    // No NODE_NAME = no node context (the build failed before an agent was allocated, so post runs
+    // on the controller). init() would call isUnix() there, and Jenkins dumps a
+    // MissingContextVariableException stack trace over the real failure even though it's caught.
+    if (!env.NODE_NAME && cachedIsWindows == null) {
+        echo "[INFO] No agent allocated - reporting the failure without the platform module"
+    } else {
+        try {
+            init()
+        } catch (Exception e) {
+            // init() may fail if called outside node context (isUnix() unavailable)
+            echo "[WARN] Could not initialize build utilities: ${e.message}"
+        }
     }
 
     // Load common even if platform init failed - needed for Slack notifications
