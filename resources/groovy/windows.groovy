@@ -2610,113 +2610,59 @@ def installSteamCMD() {
 }
 
 /**
- * Check if UnityDataTool is installed in tools directory.
- * Auto-updates every 14 days by checking GitHub for newer releases.
+ * Check that the pinned UnityDataTool release (common.unityDataToolVersion()) is installed in
+ * the tools directory, (re)installing it when missing or a different version.
  */
 def checkUnityDataTool(boolean autoInstall = false) {
     def toolsDir = getToolsDir()
     def toolDir = "${toolsDir}\\unity_data_tool"
     def toolPath = "${toolDir}\\UnityDataTool.exe"
     def versionFile = "${toolDir}\\.version"
+    def wanted = common.unityDataToolVersion()
 
-    // Single bat call: check existence, version file, and freshness
-    // Outputs: MISSING | STALE | STALE\nversion | FRESH\nversion
+    // Outputs: MISSING | INSTALLED + version line
     def status = bat(
         script: """@echo off
-            echo Checking UnityDataTool installation... >&2
-            if not exist "${toolPath}" (echo   UnityDataTool not installed >&2& echo MISSING& exit /b 0)
-            if not exist "${versionFile}" (echo   Version file missing, will check for updates >&2& echo STALE& exit /b 0)
-            set "VER="
-            set "DAYS=0"
-            for /f "usebackq delims=" %%v in ("${versionFile}") do set "VER=%%v"
-            for /f "delims=" %%d in ('powershell -NoProfile -Command "((Get-Date) - (Get-Item '${versionFile}').LastWriteTime).Days"') do set "DAYS=%%d"
-            if %DAYS% GEQ 14 (
-                echo   Version %DAYS% days old, will check for updates >&2
-                echo STALE
-                if defined VER echo %VER%
-                exit /b 0
-            )
-            echo   UnityDataTool up to date >&2
-            echo FRESH
-            if defined VER echo %VER%""",
+            if not exist "${toolPath}" (echo MISSING& exit /b 0)
+            echo INSTALLED
+            if exist "${versionFile}" type "${versionFile}"
+            """,
         returnStdout: true
     ).trim()
 
-    echo "  checkUnityDataTool stdout: ${status}"
-    def lines = status.readLines()
-    def statusCode = lines[0]
-    def version = lines.size() > 1 ? lines[1] : ''
+    def lines = status.readLines().collect { it.trim() }.findAll { it }
+    def installed = lines.size() > 1 ? lines[1] : ''
 
-    // Happy path: tool exists and version is fresh (< 14 days old)
-    if (statusCode == 'FRESH') {
+    if (lines[0] == 'INSTALLED' && installed == wanted) {
         env.UNITY_DATA_TOOL_PATH = toolPath
-        return [available: true, message: "UnityDataTool ${version}", path: toolPath]
+        return [available: true, message: "UnityDataTool ${installed}", path: toolPath]
     }
-
-    // Tool not installed
-    if (statusCode == 'MISSING') {
-        if (autoInstall) return installUnityDataTool()
+    if (!autoInstall) {
         return [
             available: false,
-            message: 'UnityDataTool not installed',
-            installInstructions: "Run: buildUtils.installUnityDataTool() or download from GitHub"
+            message: lines[0] == 'MISSING' ? 'UnityDataTool not installed' : "UnityDataTool ${installed ?: 'unknown'} installed, ${wanted} required",
+            installInstructions: "Run: buildUtils.installUnityDataTool() or download ${wanted} from GitHub"
         ]
     }
-
-    // STALE: version file missing or > 14 days old - check GitHub for updates
-    try {
-        echo "[INFO] Checking for UnityDataTool updates..."
-        // Single bat call: fetch latest tag, compare, and touch version file if up-to-date
-        def updateCheck = bat(
-            script: """@echo off
-                for /f "delims=" %%t in ('powershell -NoProfile -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \$ProgressPreference = 'SilentlyContinue'; (Invoke-RestMethod -Uri 'https://api.github.com/repos/Unity-Technologies/UnityDataTools/releases/latest').tag_name"') do set "LATEST=%%t"
-                if "%LATEST%"=="" (echo ERROR& exit /b 0)
-                if "%LATEST%"=="${version}" (
-                    powershell -NoProfile -Command "(Get-Item '${versionFile}').LastWriteTime = Get-Date"
-                    echo UP_TO_DATE
-                    echo %LATEST%
-                ) else (
-                    echo UPDATE
-                    echo %LATEST%
-                )""",
-            returnStdout: true
-        ).trim()
-
-        echo "  checkUnityDataTool update stdout: ${updateCheck}"
-        def updateLines = updateCheck.readLines()
-        def updateStatus = updateLines[0]
-        def latestTag = updateLines.size() > 1 ? updateLines[1] : ''
-
-        if (updateStatus == 'UPDATE') {
-            echo "[INFO] UnityDataTool update available: ${version ?: 'unknown'} → ${latestTag}"
-            return installUnityDataTool()
-        } else if (updateStatus == 'UP_TO_DATE') {
-            env.UNITY_DATA_TOOL_PATH = toolPath
-            return [available: true, message: "UnityDataTool ${latestTag} (up to date)", path: toolPath]
-        }
-        // ERROR or unexpected - fall through
-    } catch (Exception e) {
-        echo "[WARN] UnityDataTool update check failed: ${e.message}"
-    }
-
-    // Fallback: tool exists but update check failed - still usable
-    env.UNITY_DATA_TOOL_PATH = toolPath
-    return [available: true, message: "UnityDataTool found (update check failed)", path: toolPath]
+    if (lines[0] == 'INSTALLED') echo "[INFO] UnityDataTool ${installed ?: 'unknown'} installed, switching to pinned ${wanted}"
+    return installUnityDataTool()
 }
 
 /**
- * Download and install UnityDataTool (latest release) to tools directory.
+ * Download and install the pinned UnityDataTool release to the tools directory.
  *
  * NOTE: The bundled UnityFileSystemApi.dll is NOT backwards compatible across Unity versions
  * (see https://github.com/Unity-Technologies/UnityDataTools/issues/26).
  * runUnityDataTool() replaces the bundled DLL with the one from the Unity editor that built
- * the project, so we always install the latest tool version for best feature support.
+ * the project. Releases from v2.3.0 refuse any DLL older than Unity 6.7, which is why the
+ * version is pinned (common.unityDataToolVersion()) rather than tracking latest.
  */
 def installUnityDataTool() {
     def toolsDir = getToolsDir()
     def toolDir = "${toolsDir}\\unity_data_tool"
+    def wanted = common.unityDataToolVersion()
 
-    echo "[INFO] Installing UnityDataTool (latest)..."
+    echo "[INFO] Installing UnityDataTool ${wanted}..."
 
     bat """
         @echo off
@@ -2725,36 +2671,38 @@ def installUnityDataTool() {
         set "TOOL_DIR=${toolDir}"
         set "TEMP_DIR=%TEMP%\\unity_data_tool_install"
 
-        if not exist "%TOOL_DIR%" mkdir "%TOOL_DIR%"
+        REM Wipe the old install so files from another release can't linger
+        if exist "%TOOL_DIR%" rmdir /s /q "%TOOL_DIR%"
+        mkdir "%TOOL_DIR%"
         if not exist "%TEMP_DIR%" mkdir "%TEMP_DIR%"
 
-        echo Fetching latest UnityDataTool release...
-        powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \$ProgressPreference = 'SilentlyContinue'; \$release = Invoke-RestMethod -Uri 'https://api.github.com/repos/Unity-Technologies/UnityDataTools/releases/latest'; \$asset = \$release.assets | Where-Object { \$_.name -match 'windows-x64.*\\.zip\$' } | Select-Object -First 1; Invoke-WebRequest -Uri \$asset.browser_download_url -OutFile '%TEMP_DIR%\\tool.zip'; \$release.tag_name | Out-File -FilePath '%TEMP_DIR%\\version.txt' -NoNewline"
+        echo Fetching UnityDataTool ${wanted}...
+        powershell -NoProfile -Command "\$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \$ProgressPreference = 'SilentlyContinue'; \$release = Invoke-RestMethod -Uri 'https://api.github.com/repos/Unity-Technologies/UnityDataTools/releases/tags/${wanted}'; \$asset = \$release.assets | Where-Object { \$_.name -match 'windows-x64.*\\.zip\$' } | Select-Object -First 1; if (-not \$asset) { throw 'no windows-x64 zip in release ${wanted}' }; Invoke-WebRequest -Uri \$asset.browser_download_url -OutFile '%TEMP_DIR%\\tool.zip'"
         if errorlevel 1 (
-            echo [ERROR] Failed to download UnityDataTool
+            echo [ERROR] Failed to download UnityDataTool ${wanted}
             exit /b 1
         )
 
-        set /p VERSION=<"%TEMP_DIR%\\version.txt"
-        echo Downloaded UnityDataTool %VERSION%
-
         echo Extracting...
-        powershell -Command "Expand-Archive -Path '%TEMP_DIR%\\tool.zip' -DestinationPath '%TOOL_DIR%' -Force"
+        powershell -NoProfile -Command "Expand-Archive -Path '%TEMP_DIR%\\tool.zip' -DestinationPath '%TOOL_DIR%' -Force"
         if errorlevel 1 (
             echo [ERROR] Failed to extract UnityDataTool
             exit /b 1
         )
+        if not exist "%TOOL_DIR%\\UnityDataTool.exe" (
+            echo [ERROR] UnityDataTool.exe not at the root of the ${wanted} zip
+            exit /b 1
+        )
 
-        REM Save version tag for update checking
-        if exist "%TEMP_DIR%\\version.txt" copy /y "%TEMP_DIR%\\version.txt" "%TOOL_DIR%\\.version" >nul
+        REM Save version tag for the pinned-version check
+        powershell -NoProfile -Command "'${wanted}' | Out-File -FilePath '%TOOL_DIR%\\.version' -NoNewline -Encoding ascii"
 
         rmdir /s /q "%TEMP_DIR%"
-        echo [OK] UnityDataTool installed to %TOOL_DIR%
+        echo [OK] UnityDataTool ${wanted} installed to %TOOL_DIR%
     """
 
-    def version = bat(script: "@if exist \"${toolDir}\\.version\" type \"${toolDir}\\.version\"", returnStdout: true).trim()
     env.UNITY_DATA_TOOL_PATH = "${toolDir}\\UnityDataTool.exe"
-    return [available: true, installed: true, message: "UnityDataTool ${version} installed", path: env.UNITY_DATA_TOOL_PATH]
+    return [available: true, installed: true, message: "UnityDataTool ${wanted} installed", path: env.UNITY_DATA_TOOL_PATH]
 }
 
 /**
@@ -5356,8 +5304,9 @@ if exist "${buildReportPath}" (
 echo Running analysis... >&2
 if exist "${dbFile}" del "${dbFile}"
 "${stagedToolPath}" analyze "${analyzeDir}" -o "${dbFile}"
-if errorlevel 1 (
-    echo [ERROR] Unity Data Tool analysis failed >&2
+REM Not "if errorlevel 1": a .NET crash exits negative (e.g. -532462766), which that test misses
+if not "!ERRORLEVEL!"=="0" (
+    echo [ERROR] Unity Data Tool analysis failed, exit code !ERRORLEVEL! >&2
     exit /b 1
 )
 echo [OK] Analysis complete >&2"""

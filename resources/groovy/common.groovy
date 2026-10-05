@@ -267,6 +267,16 @@ def resolveCacheServer() {
     echo "[INFO] Cache server: ${env.CACHE_SERVER_ENDPOINT}"
 }
 
+/**
+ * UnityDataTool release tag the agents install. Pinned, not "latest": from v2.3.0 the tool
+ * calls GetDllVersion() and requires a Unity 6.7+ UnityFileSystemApi, so with the 6000.0
+ * editor DLL that runUnityDataTool() stages it dies with EntryPointNotFoundException.
+ * Job env UNITY_DATA_TOOL_VERSION overrides (e.g. v2.4.0 for a 6.7+ project).
+ */
+def unityDataToolVersion() {
+    return env.UNITY_DATA_TOOL_VERSION ?: 'v2.2.1'
+}
+
 // ============================================================================
 // BADGE FUNCTIONS
 // ============================================================================

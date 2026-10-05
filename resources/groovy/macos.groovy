@@ -1876,114 +1876,68 @@ def validateMacOSBuildSupport() {
 }
 
 /**
- * Check if UnityDataTool is installed in tools directory.
- * Auto-updates every 14 days by checking GitHub for newer releases.
+ * Check that the pinned UnityDataTool release (common.unityDataToolVersion()) is installed in
+ * the tools directory, (re)installing it when missing or a different version.
  */
 def checkUnityDataTool(boolean autoInstall = false) {
     def toolsDir = getToolsDir()
     def toolDir = "${toolsDir}/unity_data_tool"
     def toolPath = "${toolDir}/UnityDataTool"
     def versionFile = "${toolDir}/.version"
+    def wanted = common.unityDataToolVersion()
 
-    // Single sh call: check existence, version file, and freshness
-    // Outputs: MISSING | STALE | STALE\nversion | FRESH\nversion
+    // Outputs: MISSING | INSTALLED + version line
     def status = sh(
         script: """
-            echo "Checking UnityDataTool installation..." >&2
-            if [ ! -f '${toolPath}' ]; then echo "  UnityDataTool not installed" >&2; echo MISSING; exit 0; fi
-            if [ ! -f '${versionFile}' ]; then echo "  Version file missing, will check for updates" >&2; echo STALE; exit 0; fi
-            DAYS=\$(( ( \$(date +%s) - \$(stat -f%m '${versionFile}') ) / 86400 ))
-            VER=\$(cat '${versionFile}')
-            if [ "\$DAYS" -ge 14 ]; then echo "  Version \$DAYS days old, will check for updates" >&2; echo STALE; echo "\$VER"; exit 0; fi
-            echo "  UnityDataTool up to date" >&2
-            echo FRESH
-            echo "\$VER"
+            if [ ! -f '${toolPath}' ]; then echo MISSING; exit 0; fi
+            echo INSTALLED
+            cat '${versionFile}' 2>/dev/null || true
         """,
         returnStdout: true
     ).trim()
 
-    echo "  checkUnityDataTool stdout: ${status}"
-    def lines = status.readLines()
-    def statusCode = lines[0]
-    def version = lines.size() > 1 ? lines[1] : ''
+    def lines = status.readLines().collect { it.trim() }.findAll { it }
+    def installed = lines.size() > 1 ? lines[1] : ''
 
-    // Happy path: tool exists and version is fresh (< 14 days old)
-    if (statusCode == 'FRESH') {
+    if (lines[0] == 'INSTALLED' && installed == wanted) {
         env.UNITY_DATA_TOOL_PATH = toolPath
-        return [available: true, message: "UnityDataTool ${version}", path: toolPath]
+        return [available: true, message: "UnityDataTool ${installed}", path: toolPath]
     }
-
-    // Tool not installed
-    if (statusCode == 'MISSING') {
-        if (autoInstall) return installUnityDataTool()
+    if (!autoInstall) {
         return [
             available: false,
-            message: 'UnityDataTool not installed',
-            installInstructions: "Run: buildUtils.installUnityDataTool() or download from GitHub"
+            message: lines[0] == 'MISSING' ? 'UnityDataTool not installed' : "UnityDataTool ${installed ?: 'unknown'} installed, ${wanted} required",
+            installInstructions: "Run: buildUtils.installUnityDataTool() or download ${wanted} from GitHub"
         ]
     }
-
-    // STALE: version file missing or > 14 days old - check GitHub for updates
-    try {
-        echo "[INFO] Checking for UnityDataTool updates..."
-        // Single sh call: fetch latest tag, compare, and touch version file if up-to-date
-        def updateCheck = sh(
-            script: """
-                LATEST=\$(curl -fsSL 'https://api.github.com/repos/Unity-Technologies/UnityDataTools/releases/latest' | grep '"tag_name"' | cut -d'"' -f4)
-                if [ -z "\$LATEST" ]; then echo ERROR; exit 0; fi
-                if [ "\$LATEST" = "${version}" ]; then
-                    touch '${versionFile}'
-                    echo UP_TO_DATE
-                    echo "\$LATEST"
-                else
-                    echo UPDATE
-                    echo "\$LATEST"
-                fi
-            """,
-            returnStdout: true
-        ).trim()
-
-        echo "  checkUnityDataTool update stdout: ${updateCheck}"
-        def updateLines = updateCheck.readLines()
-        def updateStatus = updateLines[0]
-        def latestTag = updateLines.size() > 1 ? updateLines[1] : ''
-
-        if (updateStatus == 'UPDATE') {
-            echo "[INFO] UnityDataTool update available: ${version ?: 'unknown'} → ${latestTag}"
-            return installUnityDataTool()
-        } else if (updateStatus == 'UP_TO_DATE') {
-            env.UNITY_DATA_TOOL_PATH = toolPath
-            return [available: true, message: "UnityDataTool ${latestTag} (up to date)", path: toolPath]
-        }
-        // ERROR or unexpected - fall through
-    } catch (Exception e) {
-        echo "[WARN] UnityDataTool update check failed: ${e.message}"
-    }
-
-    env.UNITY_DATA_TOOL_PATH = toolPath
-    return [available: true, message: "UnityDataTool found (update check failed)", path: toolPath]
+    if (lines[0] == 'INSTALLED') echo "[INFO] UnityDataTool ${installed ?: 'unknown'} installed, switching to pinned ${wanted}"
+    return installUnityDataTool()
 }
 
 /**
- * Download and install UnityDataTool (latest release) to tools directory
+ * Download and install the pinned UnityDataTool release to the tools directory.
+ * Releases from v2.3.0 refuse any UnityFileSystemApi older than Unity 6.7, so the version is
+ * pinned (common.unityDataToolVersion()) rather than tracking latest.
  */
 def installUnityDataTool() {
     def toolsDir = getToolsDir()
     def toolDir = "${toolsDir}/unity_data_tool"
+    def wanted = common.unityDataToolVersion()
 
     // Note: Unity only provides macOS ARM64 builds - Intel Macs not officially supported
-    echo "[INFO] Installing UnityDataTool (latest, macos-arm64)..."
+    echo "[INFO] Installing UnityDataTool ${wanted} (macos-arm64)..."
     sh """
         set -e
         TOOL_DIR="${toolDir}"
         TEMP_DIR="\$(mktemp -d)"
 
+        # Wipe the old install so files from another release can't linger
+        rm -rf "\$TOOL_DIR"
         mkdir -p "\$TOOL_DIR"
 
-        echo "Fetching latest UnityDataTool release..."
-        DOWNLOAD_URL=\$(curl -fsSL "https://api.github.com/repos/Unity-Technologies/UnityDataTools/releases/latest" | grep "browser_download_url.*macos-arm64.*\\.zip" | head -1 | cut -d'"' -f4)
-        VERSION=\$(curl -fsSL "https://api.github.com/repos/Unity-Technologies/UnityDataTools/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
-        echo "Downloading UnityDataTool \$VERSION..."
+        echo "Fetching UnityDataTool ${wanted}..."
+        DOWNLOAD_URL=\$(curl -fsSL "https://api.github.com/repos/Unity-Technologies/UnityDataTools/releases/tags/${wanted}" | grep "browser_download_url.*macos-arm64.*\\.zip" | head -1 | cut -d'"' -f4)
+        if [ -z "\$DOWNLOAD_URL" ]; then echo "[ERROR] No macos-arm64 zip in release ${wanted}"; exit 1; fi
         curl -fsSL "\$DOWNLOAD_URL" -o "\$TEMP_DIR/tool.zip"
 
         echo "Extracting..."
@@ -1991,17 +1945,16 @@ def installUnityDataTool() {
 
         chmod +x "\$TOOL_DIR/UnityDataTool"
 
-        # Save version for update checking
-        echo "\$VERSION" > "\$TOOL_DIR/.version"
+        # Save version tag for the pinned-version check
+        echo "${wanted}" > "\$TOOL_DIR/.version"
 
         rm -rf "\$TEMP_DIR"
 
-        echo "[OK] UnityDataTool \$VERSION installed to \$TOOL_DIR"
+        echo "[OK] UnityDataTool ${wanted} installed to \$TOOL_DIR"
     """
 
-    def version = sh(script: "cat '${toolDir}/.version' || echo unknown", returnStdout: true).trim()
     env.UNITY_DATA_TOOL_PATH = "${toolDir}/UnityDataTool"
-    return [available: true, installed: true, message: "UnityDataTool ${version} installed", path: env.UNITY_DATA_TOOL_PATH]
+    return [available: true, installed: true, message: "UnityDataTool ${wanted} installed", path: env.UNITY_DATA_TOOL_PATH]
 }
 
 // ============================================================================
@@ -2908,7 +2861,7 @@ echo "Running analysis..." >&2
 rm -f "${dbFile}"
 chmod +x "${stagedToolPath}"
 export DYLD_LIBRARY_PATH="${stagedDir}:\$DYLD_LIBRARY_PATH"
-"${stagedToolPath}" analyze "${analyzeDir}" -o "${dbFile}"
+"${stagedToolPath}" analyze "${analyzeDir}" -o "${dbFile}" || { echo "[ERROR] Unity Data Tool analysis failed, exit code \$?" >&2; exit 1; }
 echo "[OK] Analysis complete" >&2
 """
 

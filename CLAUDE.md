@@ -156,6 +156,7 @@ Use **specific version IDs**, not bare prefix names:
 
 - **Switch NSP not building**: `BuildOptions.CompressWithLz4HC` conflicts with Switch ROM creation — removed from `PipelineSwitch.cs`. Switch uses its own compression via `switchEnableRomCompression`/`switchRomCompressionType`
 - **Steam Linux building Windows exe**: Missing `linux-il2cpp` module causes Unity to silently fall back to Windows — added `validateLinuxBuildSupport()` preflight to `steam-linux.jenkinsfile`
+- **UnityDataTool `EntryPointNotFoundException` at `GetDllVersion`**: v2.3.0+ requires a Unity 6.7+ `UnityFileSystemApi`; we stage the project editor's DLL, so the tool is pinned in `common.unityDataToolVersion()` (`v2.2.1`, job env `UNITY_DATA_TOOL_VERSION` overrides) instead of tracking latest
 - **Steam "Failed to commit build ... : Failure"**: the `SetLive` branch in the VDF must already exist on the app. The content upload succeeds and Steam still creates the build — only the commit RPC is rejected — so the build shows up in Steamworks while the pipeline reports failure. See below.
 
 ## Xcode Auto-Install (`XCODE_VERSION`)
