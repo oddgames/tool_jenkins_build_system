@@ -6506,6 +6506,157 @@ for /d %%d in (*.nspd) do (
     common.updateUploadStatus('local', 'done')
 }
 
+/**
+ * Tell Bugpunch where this build can be downloaded, so test runners fetch it instead of building
+ * from source: a zip of the output dropped into the local-share copy (runners on the LAN copy it),
+ * the same zip over http when LOCAL_SHARE_HTTP_BASE serves the share, and Google Drive when
+ * BUGPUNCH_GDRIVE=true. Call after uploadToLocalShare(). Best-effort: a failure marks the build
+ * UNSTABLE, never FAILED.
+ *
+ * The project's Bugpunch API key and server URL come from its BugpunchConfig asset, the same ones
+ * the game ships with; job env BUGPUNCH_URL / BUGPUNCH_API_KEY_CREDENTIAL (Secret text) override.
+ * BUGPUNCH_REGISTER=false skips the step.
+ */
+def registerBugpunchBuild(Map config) {
+    if (env.BUGPUNCH_REGISTER == 'false') { echo '[INFO] Bugpunch: BUGPUNCH_REGISTER=false - not registering the build'; return }
+    def buildPath = config.buildPath
+    def shareDir = env.LOCAL_BUILD_PATH
+    if (!shareDir) { echo '[INFO] Bugpunch: no local share copy (uploadToLocalShare did not run) - not registering'; return }
+    try {
+        def bp = _bugpunchProjectConfig()
+        if (env.BUGPUNCH_API_KEY_CREDENTIAL) {
+            withCredentials([string(credentialsId: env.BUGPUNCH_API_KEY_CREDENTIAL, variable: 'BUGPUNCH_API_KEY')]) {
+                _registerBugpunchBuild(config, buildPath, shareDir, bp)
+            }
+        } else if (bp.apiKey) {
+            withEnv(["BUGPUNCH_API_KEY=${bp.apiKey}"]) {
+                _registerBugpunchBuild(config, buildPath, shareDir, bp)
+            }
+        } else {
+            echo '[INFO] Bugpunch: no apiKey in Assets/Resources/BugpunchConfig.asset and no BUGPUNCH_API_KEY_CREDENTIAL - not registering'
+        }
+    } catch (e) {
+        echo "[WARNING] Bugpunch build registration failed: ${e.message}"
+        common.setUnstable("Bugpunch build registration failed: ${e.message}")
+    }
+}
+
+private def _registerBugpunchBuild(Map config, String buildPath, String shareDir, Map bp) {
+    def serverUrl = (env.BUGPUNCH_URL ?: bp.serverUrl ?: 'https://bugpunch.com').replaceFirst('/+$', '')
+    def platform = config.platform ?: 'windows'
+    def zipDir = "${env.WORKSPACE}\\bugpunch_zip"
+    def zipName = "${_bugpunchSlug(env.APP_NAME ?: env.JOB_BASE_NAME ?: 'build')}-${env.VERSION}-${platform}.zip"
+    def localZip = "${zipDir}\\${zipName}"
+    def shareZip = "${shareDir}\\${zipName}"
+
+    // bsdtar picks the zip format from the extension; the IL2CPP / Burst debug folders are
+    // gigabytes of symbols the player never loads.
+    echo "[INFO] Bugpunch: zipping ${buildPath} -> ${zipName}"
+    bat """
+        @echo off
+        if exist "${zipDir}" rmdir /s /q "${zipDir}"
+        mkdir "${zipDir}"
+        tar.exe -a -c -f "${localZip}" --exclude "*_BackUpThisFolder_ButDontShipItWithYourGame" --exclude "*_BurstDebugInformation_DoNotShip" -C "${buildPath}" .
+        if errorlevel 1 exit /b 1
+        robocopy "${zipDir}" "${shareDir}" "${zipName}" /J /R:3 /W:5 /NJH /NJS /NFL /NDL
+        if %ERRORLEVEL% GEQ 8 exit /b 1
+        exit /b 0
+    """
+    def zipSize = bat(script: "@for %%A in (\"${localZip}\") do @echo %%~zA", returnStdout: true).trim()
+
+    // The share folder: a runner on the LAN finds the zip inside it by name.
+    def locations = [[url: shareDir, kind: 'unc', locality: 'lan', label: 'Local share']]
+    def httpUrl = common.localShareUrl(shareZip)
+    if (httpUrl?.startsWith('http')) locations << [url: httpUrl, locality: 'lan', label: 'Local share (http)']
+
+    if (env.BUGPUNCH_GDRIVE == 'true' && !params.LOCAL_ONLY) {
+        def driveLink = _bugpunchUploadZipToDrive(localZip, zipName)
+        if (driveLink) locations << [url: driveLink, kind: 'gdrive', locality: 'public', label: 'Google Drive']
+    }
+
+    def fields = [
+        platform  : platform,
+        fileName  : zipName,
+        fileSize  : zipSize,
+        appVersion: bp.version ?: '',
+        buildHash : bp.buildHash ?: '',
+        branch    : env.PLASTICSCM_BRANCH ?: env.BRANCH ?: '',
+        commit    : env.PLASTICSCM_CHANGESET_ID ?: bp.commit ?: '',
+        notes     : "Jenkins ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.VERSION})",
+    ]
+    def form = fields.collect { k, v -> "-F \"${k}=${"${v}".replace('"', "'")}\"" }.join(' ')
+    writeFile file: 'bugpunch_zip/locations.json', text: groovy.json.JsonOutput.toJson(locations)
+    def out = bat(returnStdout: true, script: """
+        @echo off
+        curl.exe -sS --fail-with-body --retry 3 --retry-delay 10 -X POST "${serverUrl}/api/builds/upload" -H "X-Api-Key: %BUGPUNCH_API_KEY%" ${form} -F "locations=<${zipDir}\\locations.json"
+        if errorlevel 1 exit /b 1
+    """).trim()
+    def buildId = _bugpunchBuildId(out)
+    echo "[OK] Bugpunch: registered ${zipName} (${locations.size()} location(s))${buildId ? ', build ' + buildId : ''}"
+    env.BUGPUNCH_BUILD_ID = buildId ?: ''
+    bat "@if exist \"${zipDir}\" rmdir /s /q \"${zipDir}\""
+}
+
+private def _bugpunchUploadZipToDrive(String localZip, String zipName) {
+    def rclonePath = env.RCLONE_PATH ?: checkRclone(true).path
+    if (!rclonePath) { echo '[WARNING] Bugpunch: rclone not available - no Google Drive location'; return '' }
+    def destFolder = "${env.JOB_NAME}/${env.VERSION}"
+    def link = ''
+    withCredentials([file(credentialsId: 'rclone', variable: 'RCLONE_CONFIG')]) {
+        def rcloneLog = "${env.ARTIFACT_PATH ?: env.WORKSPACE}\\rclone_bugpunch.log"
+        def status = bat(returnStatus: true, script: """
+            @echo off
+            "${rclonePath}" copy "${localZip}" "%RCLONE_REMOTE%/${destFolder}/" --config "%RCLONE_CONFIG%" --drive-chunk-size=256M --drive-upload-cutoff=256M --retries=3 --retries-sleep=60s --low-level-retries=3 --stats=30s --stats-one-line --log-file "${rcloneLog}" -v
+        """)
+        if (status != 0) {
+            echo "[WARNING] Bugpunch: Google Drive upload failed (see ${rcloneLog})"
+        } else {
+            link = _rcloneLink(rclonePath, "${destFolder}/${zipName}")
+        }
+    }
+    return link
+}
+
+/** apiKey / serverUrl from Resources/BugpunchConfig.asset, version / buildHash / commit from the SDK's build stamp. */
+private Map _bugpunchProjectConfig() {
+    def project = env.UNITY_PROJECT ?: '.'
+    def result = [:]
+    def configPath = "${project}\\Assets\\Resources\\BugpunchConfig.asset"
+    if (fileExists(configPath)) result.putAll(_bugpunchYamlFields(readFile(configPath), ['apiKey', 'serverUrl']))
+    def stampPath = "${project}\\Assets\\Bugpunch\\Resources\\BugpunchBuildInfo.txt"
+    if (fileExists(stampPath)) result.putAll(_bugpunchStampFields(readFile(stampPath)))
+    return result
+}
+
+@com.cloudbees.groovy.cps.NonCPS
+private Map _bugpunchYamlFields(String text, List<String> keys) {
+    def out = [:]
+    text.split('\n').each { line ->
+        def t = line.trim()
+        keys.each { k -> if (t.startsWith("${k}:")) out[k] = t.substring(k.length() + 1).trim() }
+    }
+    return out
+}
+
+@com.cloudbees.groovy.cps.NonCPS
+private Map _bugpunchStampFields(String text) {
+    def stamp = text.trim()
+    if (!stamp.startsWith('{')) return [:]
+    def parsed = new groovy.json.JsonSlurper().parseText(stamp)
+    return [buildHash: parsed.buildHash ?: '', version: parsed.version ?: '', commit: parsed.commit ?: '']
+}
+
+@com.cloudbees.groovy.cps.NonCPS
+private String _bugpunchSlug(String s) {
+    return s.replaceAll('[^A-Za-z0-9._-]+', '_')
+}
+
+@com.cloudbees.groovy.cps.NonCPS
+private String _bugpunchBuildId(String response) {
+    def m = (response =~ /"Id"\s*:\s*"([^"]+)"/)
+    return m.find() ? m.group(1) : ''
+}
+
 // Fire-and-forget cleanup. Writes a .ps1 to the workspace and launches it
 // detached so the build doesn't wait. Output goes to a log file under the
 // share root so it can be inspected after the fact.

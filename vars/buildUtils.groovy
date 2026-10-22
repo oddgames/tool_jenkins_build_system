@@ -684,6 +684,7 @@ def convertAabToApk(Map config) { platform.convertAabToApk(config) }
 def uploadToGoogleDrive(Map config) { platform.uploadToGoogleDrive(config) }
 def uploadFolderToGoogleDrive(Map config) { platform.uploadFolderToGoogleDrive(config) }
 def uploadToLocalShare(Map config) { platform.uploadToLocalShare(config) }
+def registerBugpunchBuild(Map config) { platform.registerBugpunchBuild(config) }
 def cleanupLocalShare(String sharePath = null) { platform.cleanupLocalShare(sharePath) }
 def uploadToGCS(Map config) { platform.uploadToGCS(config) }
 def amazonUpload(Map config) { platform.amazonUpload(config) }

@@ -433,6 +433,8 @@ pipeline {
                                 buildPath: "${env.BUILD_PATH}\\output",
                                 buildType: params.BUILD_TYPE
                             )
+                            // Lets Bugpunch test runners download this build (best-effort, UNSTABLE on failure).
+                            buildUtils.registerBugpunchBuild(buildPath: "${env.BUILD_PATH}\\output", platform: 'windows')
                         }
                     }
                 }

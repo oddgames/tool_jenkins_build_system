@@ -306,6 +306,25 @@ blue = running, **orange = built but not yet uploaded**, green/yellow/red/grey =
   state, later updates edit it in place, and `handleBuildSuccess()` still posts if the local stage
   never reported. `notifyAfterLocal: false` restores the immediate post.
 
+## Bugpunch Build Registration (`registerBugpunchBuild`)
+
+Steam (Windows) builds tell Bugpunch where the build can be downloaded, so Bugpunch test runners fetch
+the built player instead of building from source. Called from the `Local Share` stage right after
+`uploadToLocalShare()` (it needs `env.LOCAL_BUILD_PATH`).
+
+- Zips the output with `tar.exe -a` (skipping the `*_DoNotShip` / `*_ButDontShipItWithYourGame` symbol
+  folders) into the share copy as `<APP_NAME>-<VERSION>-windows.zip`, then POSTs a locations-only
+  build to `<server>/api/builds/upload`: the share folder (runners on the LAN copy the zip out of it),
+  the zip over http when `LOCAL_SHARE_HTTP_BASE` is set, and a Google Drive link when
+  `BUGPUNCH_GDRIVE=true` (uploads the zip with the `rclone` credential).
+- **No credential to set up**: the API key and server URL come from the project's
+  `Assets/Resources/BugpunchConfig.asset` (what the game ships with), and `appVersion` / `buildHash` /
+  `commit` from the SDK's `Assets/Bugpunch/Resources/BugpunchBuildInfo.txt` stamp, so the row merges
+  with any build the SDK itself reported. Job env `BUGPUNCH_URL`, `BUGPUNCH_API_KEY_CREDENTIAL`
+  (Secret text) override; `BUGPUNCH_REGISTER=false` skips the step.
+- Best-effort: any failure marks the build UNSTABLE with the reason; it never fails it. The Bugpunch
+  build id lands in `env.BUGPUNCH_BUILD_ID`.
+
 ## Build Warnings → UNSTABLE (`[BUILD-WARN]`)
 
 Any build tool can flag the build UNSTABLE (yellow; the build still uploads) by getting a line into
