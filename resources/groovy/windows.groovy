@@ -3777,67 +3777,155 @@ FIX: Remote into the build agent, then:
 // ============================================================================
 
 /**
- * Preflight check for Unity license activation.
- * Checks if a valid license file exists on the agent. If not, activates
- * using the Build Server serial key (node-locked to this machine).
+ * Activate the Unity serial for this build; releaseUnityLicense() returns it from post.
+ *
+ * The serial has fewer machine activations than we have agents, so an agent only holds one
+ * while it builds. The activation belongs to the PC, which several Jenkins agents can share,
+ * so each build drops a holder file in _unityLicenseHolderDir() under a per-host lock and only
+ * the last build out returns the serial. A license already on the machine (an old permanent
+ * activation, or another build's) is reused, and returned with the rest.
+ *
+ * When every activation is taken, Unity's activation fails; the build retries every 2 minutes
+ * for UNITY_LICENSE_WAIT_MINUTES (default 30) before failing.
+ *
+ * Job/node env:
+ *   UNITY_LICENSE_RETURN=false  keep the activation on the machine (old behaviour). Set it on
+ *                               the node, not the job: any other build on the PC still returns it.
  *
  * Required Jenkins credentials:
- *   unity-build-serial  - Secret text: Build Server serial (SB-XXXX-XXXX-XXXX-XXXX-XXXX)
+ *   unity-build-serial  - Secret text: Unity serial key
  *   unity-credentials   - Username/password: Unity account for activation
  */
 def preflightUnityLicense() {
-    // Check if a license file already exists
-    def hasLicense = bat(
-        script: '@if exist "C:\\ProgramData\\Unity\\Unity_lic.ulf" echo found',
-        returnStdout: true
-    ).trim()
+    def unityExe = _unityExeForLicense()
 
-    if (hasLicense == 'found') {
-        echo "[OK] Unity license file found (C:\\ProgramData\\Unity\\Unity_lic.ulf)"
+    if (env.UNITY_LICENSE_RETURN == 'false') {
+        if (_hasUnityLicense()) {
+            echo "[OK] Unity license file found (C:\\ProgramData\\Unity\\Unity_lic.ulf)"
+        } else if (!_activateUnityLicense(unityExe)) {
+            error "[ERROR] Unity license activation failed - see the Unity log above."
+        }
         return
     }
 
-    echo "[INFO] No Unity license found on this agent - attempting activation..."
+    def holderDir = _unityLicenseHolderDir()
+    def holder = "${holderDir}\\${env.BUILD_TAG.replaceAll(/[^A-Za-z0-9._-]/, '_')}"
+    def lockName = _unityLicenseLockName()
+    def waitMinutes = (env.UNITY_LICENSE_WAIT_MINUTES ?: '30') as Integer
+    def attempts = waitMinutes.intdiv(2) + 1
 
+    for (int attempt = 1; attempt <= attempts; attempt++) {
+        def licensed = false
+        lock(resource: lockName) {
+            if (!env.UNITY_LICENSE_HOLDER) {
+                bat "@if not exist \"${holderDir}\" mkdir \"${holderDir}\"\n@echo %NODE_NAME% > \"${holder}\""
+                env.UNITY_LICENSE_HOLDER = holder
+            }
+            if (_hasUnityLicense()) {
+                echo "[OK] Unity license already active on this machine - sharing it (returned by the last build out)"
+                licensed = true
+            } else {
+                licensed = _activateUnityLicense(unityExe)
+            }
+        }
+        if (licensed) return
+        if (attempt < attempts) {
+            echo "[WARN] Unity activation failed (attempt ${attempt}/${attempts}) - every activation may be in use by other agents. Retrying in 2 minutes."
+            sleep(time: 2, unit: 'MINUTES')
+        }
+    }
+
+    // Nothing was activated, so there is nothing for post to return
+    bat script: "@del \"${holder}\" 2>nul", returnStatus: true
+    env.UNITY_LICENSE_HOLDER = null
+    error "[ERROR] Could not activate the Unity serial after ${waitMinutes} minutes. If the log says the activation limit is reached, every activation is in use: check for agents that died mid-build and revoke them in the Unity dashboard. Otherwise check the unity-credentials account."
+}
+
+/**
+ * Return the Unity serial activated by preflightUnityLicense(), unless another build on this
+ * PC still holds it. Runs from cleanupAtWorkspaces() in post; never throws.
+ * Holder files older than 12 hours are treated as builds that died without reaching post.
+ */
+def releaseUnityLicense() {
+    def holder = env.UNITY_LICENSE_HOLDER
+    if (!holder) return
+
+    try {
+        lock(resource: _unityLicenseLockName()) {
+            def remaining = bat(returnStdout: true, script: """@powershell -NoProfile -Command "Remove-Item -LiteralPath '${holder}' -ErrorAction SilentlyContinue; Get-ChildItem -LiteralPath '${_unityLicenseHolderDir()}' -File -ErrorAction SilentlyContinue | Where-Object { \$_.LastWriteTime -lt (Get-Date).AddHours(-12) } | Remove-Item -ErrorAction SilentlyContinue; @(Get-ChildItem -LiteralPath '${_unityLicenseHolderDir()}' -File -ErrorAction SilentlyContinue).Count" """).trim()
+            if (remaining != '0') {
+                echo "[INFO] Unity license still in use by ${remaining} other build(s) on this machine - leaving it activated"
+                return
+            }
+
+            def unityExe = "C:\\UnityEditors\\${env.UNITY_VERSION}\\Editor\\Unity.exe"
+            echo "[INFO] Returning the Unity serial activation..."
+            def status = 1
+            withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
+                status = bat(returnStatus: true, script: """
+                    @echo off
+                    "${unityExe}" -quit -batchmode -nographics -returnlicense -username "%UNITY_USERNAME%" -password "%UNITY_PASSWORD%" -logFile - 2>&1
+                    exit /b %errorlevel%
+                """)
+            }
+            if (status == 0) {
+                echo "[OK] Unity serial returned - activation freed for other agents"
+            } else {
+                echo "[WARN] Unity -returnlicense exited ${status}; the activation may still be held by this machine. Revoke it in the Unity dashboard if agents run out."
+            }
+        }
+    } catch (e) {
+        echo "[WARN] Could not release the Unity license: ${e.message}"
+    }
+    env.UNITY_LICENSE_HOLDER = null
+}
+
+// One file per build holding the PC's Unity activation, shared by every agent on the PC
+private def _unityLicenseHolderDir() {
+    return 'C:\\ProgramData\\Unity\\jenkins-license-holders'
+}
+
+// Per PC, not per node: agents on the same PC share C:\ProgramData\Unity.
+private def _unityLicenseLockName() {
+    return "unity-license-${bat(script: '@hostname', returnStdout: true).trim()}"
+}
+
+private boolean _hasUnityLicense() {
+    return bat(script: '@if exist "C:\\ProgramData\\Unity\\Unity_lic.ulf" echo found', returnStdout: true).trim() == 'found'
+}
+
+private def _unityExeForLicense() {
     if (!env.UNITY_VERSION) {
         error "[ERROR] Cannot activate Unity license: UNITY_VERSION not set. Run extractUnityVersion() first."
     }
-
     def unityExe = "C:\\UnityEditors\\${env.UNITY_VERSION}\\Editor\\Unity.exe"
     def exeExists = bat(script: "@if exist \"${unityExe}\" echo found", returnStdout: true).trim()
     if (exeExists != 'found') {
         error "[ERROR] Unity editor not found at ${unityExe}. Run validateUnityInstallation() first."
     }
+    return unityExe
+}
 
+// Unity's exit code is the signal: some serials (Build Server SB-...) never write Unity_lic.ulf.
+private boolean _activateUnityLicense(String unityExe) {
+    echo "[INFO] Activating the Unity serial on this machine..."
+    def status = 1
     withCredentials([
         string(credentialsId: 'unity-build-serial', variable: 'UNITY_SERIAL'),
         usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
     ]) {
-        bat """
+        status = bat(returnStatus: true, script: """
             @echo off
-            echo [INFO] Activating Unity Build Server license...
             "${unityExe}" -quit -batchmode -nographics -serial "%UNITY_SERIAL%" -username "%UNITY_USERNAME%" -password "%UNITY_PASSWORD%" -logFile - 2>&1
-            if errorlevel 1 (
-                echo [ERROR] Unity license activation failed with exit code %errorlevel%
-                exit /b 1
-            )
-            echo [OK] Unity license activated successfully
-        """
+            exit /b %errorlevel%
+        """)
     }
-
-    // Verify the license file was created
-    // Note: Build Server licenses (SB-XXXX) may not always create Unity_lic.ulf —
-    // they can use a different licensing mechanism. Trust Unity's exit code as primary signal.
-    def verified = bat(
-        script: '@if exist "C:\\ProgramData\\Unity\\Unity_lic.ulf" echo found',
-        returnStdout: true
-    ).trim()
-
-    if (verified != 'found') {
-        echo "[WARN] Unity activation succeeded (exit code 0) but Unity_lic.ulf was not found at C:\\ProgramData\\Unity\\. Build Server licenses may store licensing differently — proceeding."
-    } else {
-        echo "[OK] Unity license activated and verified on this agent"
+    if (status != 0) {
+        echo "[ERROR] Unity license activation failed with exit code ${status}"
+        return false
     }
+    echo "[OK] Unity license activated on this machine"
+    return true
 }
 
 // ============================================================================

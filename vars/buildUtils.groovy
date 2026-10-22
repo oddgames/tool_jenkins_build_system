@@ -602,6 +602,8 @@ def cleanupSteamStaging() { platform.cleanupSteamStaging() }
  * builds and are never cleaned up automatically.
  */
 def cleanupAtWorkspaces() {
+    // Every pipeline's post { always } ends here, so the per-build Unity activation is returned here too
+    platform.releaseUnityLicense()
     platform.cleanupGitAuth()
 
     def ws = env.WORKSPACE
@@ -653,6 +655,7 @@ def preflightDotNetSDK(String requiredVersion = '8.0') { platform.preflightDotNe
 def preflightLongPaths() { platform.preflightLongPaths() }
 def preflightFirebaseCLI() { platform.preflightFirebaseCLI() }
 def preflightUnityLicense() { platform.preflightUnityLicense() }
+def releaseUnityLicense() { platform.releaseUnityLicense() }
 def extractUnityVersion(String unityProjectPath) { platform.extractUnityVersion(unityProjectPath) }
 def validateUnityInstallation() { platform.validateUnityInstallation() }
 def validateLinuxBuildSupport() { platform.validateLinuxBuildSupport() }

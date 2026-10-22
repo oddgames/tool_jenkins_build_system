@@ -3011,53 +3011,151 @@ def analyzeBuildReport(Map config = [:]) {
 // ============================================================================
 
 /**
- * Preflight check for Unity license activation (macOS).
- * Checks if a valid license file exists on the agent. If not, activates
- * using the Build Server serial key (node-locked to this machine).
+ * Activate the Unity serial for this build (macOS); releaseUnityLicense() returns it from post.
+ * Same scheme as windows.groovy: holder files in _unityLicenseHolderDir() under a per-host
+ * lock, the last build out returns the serial, activation retried for
+ * UNITY_LICENSE_WAIT_MINUTES (default 30) while every activation is in use.
+ * UNITY_LICENSE_RETURN=false (node env) keeps the activation on the machine.
  *
  * Required Jenkins credentials:
- *   unity-build-serial  - Secret text: Build Server serial (SB-XXXX-XXXX-XXXX-XXXX-XXXX)
+ *   unity-build-serial  - Secret text: Unity serial key
  *   unity-credentials   - Username/password: Unity account for activation
  */
 def preflightUnityLicense() {
-    // macOS license file location
-    def licensePath = "/Library/Application Support/Unity/Unity_lic.ulf"
-    def hasLicense = sh(script: "test -f '${licensePath}' && echo found || echo missing", returnStdout: true).trim()
+    def unityExe = _unityExeForLicense()
 
-    if (hasLicense == 'found') {
-        echo "[OK] Unity license file found (${licensePath})"
+    if (env.UNITY_LICENSE_RETURN == 'false') {
+        if (_hasUnityLicense()) {
+            echo "[OK] Unity license file found (${_unityLicensePath()})"
+        } else if (!_activateUnityLicense(unityExe)) {
+            error "[ERROR] Unity activation command ran but license file was not created at ${_unityLicensePath()}"
+        }
         return
     }
 
-    echo "[INFO] No Unity license found on this agent - attempting activation..."
+    def holderDir = _unityLicenseHolderDir()
+    def holder = "${holderDir}/${env.BUILD_TAG.replaceAll(/[^A-Za-z0-9._-]/, '_')}"
+    def lockName = _unityLicenseLockName()
+    def waitMinutes = (env.UNITY_LICENSE_WAIT_MINUTES ?: '30') as Integer
+    def attempts = waitMinutes.intdiv(2) + 1
 
+    for (int attempt = 1; attempt <= attempts; attempt++) {
+        def licensed = false
+        lock(resource: lockName) {
+            if (!env.UNITY_LICENSE_HOLDER) {
+                // World-writable: several agent users on one Mac share it
+                sh "mkdir -p '${holderDir}' && chmod 777 '${holderDir}' 2>/dev/null; echo \"\$NODE_NAME\" > '${holder}'"
+                env.UNITY_LICENSE_HOLDER = holder
+            }
+            if (_hasUnityLicense()) {
+                echo "[OK] Unity license already active on this machine - sharing it (returned by the last build out)"
+                licensed = true
+            } else {
+                licensed = _activateUnityLicense(unityExe)
+            }
+        }
+        if (licensed) return
+        if (attempt < attempts) {
+            echo "[WARN] Unity activation failed (attempt ${attempt}/${attempts}) - every activation may be in use by other agents. Retrying in 2 minutes."
+            sleep(time: 2, unit: 'MINUTES')
+        }
+    }
+
+    // Nothing was activated, so there is nothing for post to return
+    sh script: "rm -f '${holder}'", returnStatus: true
+    env.UNITY_LICENSE_HOLDER = null
+    error "[ERROR] Could not activate the Unity serial after ${waitMinutes} minutes. If the log says the activation limit is reached, every activation is in use: check for agents that died mid-build and revoke them in the Unity dashboard. Otherwise check the unity-credentials account."
+}
+
+/**
+ * Return the Unity serial activated by preflightUnityLicense(), unless another build on this
+ * Mac still holds it. Runs from cleanupAtWorkspaces() in post; never throws.
+ * Holder files older than 12 hours are treated as builds that died without reaching post.
+ */
+def releaseUnityLicense() {
+    def holder = env.UNITY_LICENSE_HOLDER
+    if (!holder) return
+
+    try {
+        lock(resource: _unityLicenseLockName()) {
+            def dir = _unityLicenseHolderDir()
+            def remaining = sh(returnStdout: true, script: """
+                rm -f '${holder}'
+                find '${dir}' -type f -mmin +720 -delete 2>/dev/null
+                find '${dir}' -type f 2>/dev/null | wc -l | tr -d ' '
+            """).trim()
+            if (remaining != '0') {
+                echo "[INFO] Unity license still in use by ${remaining} other build(s) on this machine - leaving it activated"
+                return
+            }
+
+            def unityExe = "${getUnityInstallDir(env.UNITY_VERSION)}/Unity.app/Contents/MacOS/Unity"
+            echo "[INFO] Returning the Unity serial activation..."
+            def status = 1
+            withCredentials([usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')]) {
+                status = sh(returnStatus: true, script: """
+                    '${unityExe}' -quit -batchmode -nographics -returnlicense -username "\$UNITY_USERNAME" -password "\$UNITY_PASSWORD" -logFile - 2>&1
+                """)
+            }
+            if (status == 0) {
+                echo "[OK] Unity serial returned - activation freed for other agents"
+            } else {
+                echo "[WARN] Unity -returnlicense exited ${status}; the activation may still be held by this machine. Revoke it in the Unity dashboard if agents run out."
+            }
+        }
+    } catch (e) {
+        echo "[WARN] Could not release the Unity license: ${e.message}"
+    }
+    env.UNITY_LICENSE_HOLDER = null
+}
+
+private def _unityLicensePath() {
+    return '/Library/Application Support/Unity/Unity_lic.ulf'
+}
+
+// One file per build holding the Mac's Unity activation, shared by every agent on the Mac
+private def _unityLicenseHolderDir() {
+    return '/Users/Shared/jenkins-unity-license-holders'
+}
+
+// Per machine, not per node: agents on the same Mac share /Library/Application Support/Unity.
+private def _unityLicenseLockName() {
+    return "unity-license-${sh(script: 'hostname -s', returnStdout: true).trim()}"
+}
+
+private boolean _hasUnityLicense() {
+    return sh(script: "test -f '${_unityLicensePath()}' && echo found || echo missing", returnStdout: true).trim() == 'found'
+}
+
+private def _unityExeForLicense() {
     if (!env.UNITY_VERSION) {
         error "[ERROR] Cannot activate Unity license: UNITY_VERSION not set. Run extractUnityVersion() first."
     }
-
     def unityExe = "${getUnityInstallDir(env.UNITY_VERSION)}/Unity.app/Contents/MacOS/Unity"
     def exeExists = sh(script: "test -f '${unityExe}' && echo found || echo missing", returnStdout: true).trim()
     if (exeExists != 'found') {
         error "[ERROR] Unity editor not found at ${unityExe}. Run validateUnityInstallation() first."
     }
+    return unityExe
+}
 
+// The license file is the signal on macOS; the activation's exit code is ignored.
+private boolean _activateUnityLicense(String unityExe) {
+    echo "[INFO] Activating the Unity serial on this machine..."
     withCredentials([
         string(credentialsId: 'unity-build-serial', variable: 'UNITY_SERIAL'),
         usernamePassword(credentialsId: 'unity-credentials', usernameVariable: 'UNITY_USERNAME', passwordVariable: 'UNITY_PASSWORD')
     ]) {
         sh """
-            echo "[INFO] Activating Unity Build Server license..."
             '${unityExe}' -quit -batchmode -nographics -serial "\$UNITY_SERIAL" -username "\$UNITY_USERNAME" -password "\$UNITY_PASSWORD" -logFile - 2>&1 || true
         """
     }
-
-    // Verify the license file was created
-    def verified = sh(script: "test -f '${licensePath}' && echo found || echo missing", returnStdout: true).trim()
-    if (verified != 'found') {
-        error "[ERROR] Unity activation command ran but license file was not created at ${licensePath}"
+    if (!_hasUnityLicense()) {
+        echo "[ERROR] Unity activation ran but ${_unityLicensePath()} was not created"
+        return false
     }
-
-    echo "[OK] Unity license activated and verified on this agent"
+    echo "[OK] Unity license activated on this machine"
+    return true
 }
 
 def extractUnityVersion(String unityProjectPath) {

@@ -167,6 +167,27 @@ Use **specific version IDs**, not bare prefix names:
 - **UnityDataTool `EntryPointNotFoundException` at `GetDllVersion`**: v2.3.0+ requires a Unity 6.7+ `UnityFileSystemApi`; we stage the project editor's DLL, so the tool is pinned in `common.unityDataToolVersion()` (`v2.2.1`, job env `UNITY_DATA_TOOL_VERSION` overrides) instead of tracking latest
 - **Steam "Failed to commit build ... : Failure"**: the `SetLive` branch in the VDF must already exist on the app. The content upload succeeds and Steam still creates the build — only the commit RPC is rejected — so the build shows up in Steamworks while the pipeline reports failure. See below.
 
+## Unity License (per-build serial activation)
+
+The `unity-build-serial` serial has a fixed number of machine activations (10), fewer than we
+have agents, so a machine only holds one while it builds. `preflightUnityLicense()` (the
+`Unity License` stage) activates it, and `releaseUnityLicense()` returns it with
+`Unity -returnlicense`, called from `buildUtils.cleanupAtWorkspaces()`, which every Jenkinsfile's
+`post { always }` already calls.
+
+- **The activation belongs to the PC, not the Jenkins node**, and several agents can share one PC.
+  Each build writes a holder file (`C:\ProgramData\Unity\jenkins-license-holders\`,
+  `/Users/Shared/jenkins-unity-license-holders/`) under a per-hostname `lock`, and only the last
+  build out returns the serial. A license already on the machine is reused, and returned with the rest, so old
+  permanent activations are freed the first time each agent builds.
+- **All activations in use**: activation fails, and the build retries every 2 minutes for
+  `UNITY_LICENSE_WAIT_MINUTES` (default 30) before failing. Unity doesn't give a distinct exit code
+  for "limit reached", so bad credentials also wait the full time. Read the Unity log in the stage.
+- **Agents that die mid-build** keep their activation, and builds don't count their holder file after
+  12 hours. Until another build on that PC returns the serial, revoke it in the Unity dashboard.
+- **`UNITY_LICENSE_RETURN=false`** (node env) keeps the old behaviour of a permanent activation. Set
+  it on the node, not the job: any other build on that PC still returns the serial.
+
 ## Xcode Auto-Install (`XCODE_VERSION`)
 
 `preflightXcode()` (macos.groovy) picks the Xcode via `DEVELOPER_DIR`; when `XCODE_VERSION` isn't
