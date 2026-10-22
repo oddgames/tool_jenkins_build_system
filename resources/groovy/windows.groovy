@@ -6509,8 +6509,9 @@ for /d %%d in (*.nspd) do (
 /**
  * Tell Bugpunch where this build can be downloaded, so test runners fetch it instead of building
  * from source: a zip of the output dropped into the local-share copy (runners on the LAN copy it),
- * the same zip over http when LOCAL_SHARE_HTTP_BASE serves the share, and Google Drive when
- * BUGPUNCH_GDRIVE=true. Call after uploadToLocalShare(). Best-effort: a failure marks the build
+ * the same zip over http when LOCAL_SHARE_HTTP_BASE serves the share, and Google Drive unless
+ * BUGPUNCH_GDRIVE=false or LOCAL_ONLY: the test runners are off the build LAN, so the Drive copy is
+ * usually the only one they can reach. Call after uploadToLocalShare(). Best-effort: a failure marks the build
  * UNSTABLE, never FAILED.
  *
  * artifact: 'apk' (or 'ipa', ...) registers the single *.<artifact> file uploadToLocalShare already
@@ -6601,7 +6602,7 @@ for %%f in (*.${config.artifact}) do (
     if (config.artifact) {
         // The job's own Drive stage uploads the artifact; if it already finished, its link rides along.
         if (env.GDRIVE_FILE_LINK) locations << [url: env.GDRIVE_FILE_LINK, kind: 'gdrive', locality: 'public', label: 'Google Drive']
-    } else if (env.BUGPUNCH_GDRIVE == 'true' && !params.LOCAL_ONLY) {
+    } else if (env.BUGPUNCH_GDRIVE != 'false' && !params.LOCAL_ONLY) {
         def driveLink = _bugpunchUploadZipToDrive(localZip, zipName)
         if (driveLink) locations << [url: driveLink, kind: 'gdrive', locality: 'public', label: 'Google Drive']
     }
