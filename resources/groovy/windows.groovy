@@ -6617,7 +6617,7 @@ for %%f in (*.${config.artifact}) do (
         notes     : "Jenkins ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.VERSION}) ${env.BUILD_URL ?: ''}".trim(),
     ]
     def form = fields.collect { k, v -> "-F \"${k}=${"${v}".replace('"', "'")}\"" }.join(' ')
-    writeFile file: 'bugpunch_zip/locations.json', text: groovy.json.JsonOutput.toJson(locations)
+    writeFile file: 'bugpunch_zip/locations.json', text: _bugpunchJson(locations)
     def out = bat(returnStdout: true, script: """
         @echo off
         curl.exe -sS --fail-with-body --retry 3 --retry-delay 10 -X POST "${serverUrl}/api/builds/upload" -H "X-Api-Key: %BUGPUNCH_API_KEY%" ${form} -F "locations=<${zipDir}\\locations.json"
@@ -6639,7 +6639,7 @@ def addBugpunchDriveMirror() {
     if (env.BUGPUNCH_REGISTER == 'false' || !env.GDRIVE_FILE_LINK || !env.BUGPUNCH_BUILD_ID) return
     try {
         def bp = _bugpunchProjectConfig()
-        def body = groovy.json.JsonOutput.toJson([url: env.GDRIVE_FILE_LINK, kind: 'gdrive', locality: 'public', label: 'Google Drive'])
+        def body = _bugpunchJson([url: env.GDRIVE_FILE_LINK, kind: 'gdrive', locality: 'public', label: 'Google Drive'])
         writeFile file: 'bugpunch_mirror.json', text: body
         def post = {
             bat """
@@ -6712,6 +6712,28 @@ private Map _bugpunchStampFields(String text) {
 @com.cloudbees.groovy.cps.NonCPS
 private String _bugpunchSlug(String s) {
     return s.replaceAll('[^A-Za-z0-9._-]+', '_')
+}
+
+// groovy.json.JsonOutput is not on the script-security allowlist, so the sandbox rejects it at run time.
+@com.cloudbees.groovy.cps.NonCPS
+private String _bugpunchJson(def v) {
+    if (v == null) return 'null'
+    if (v instanceof Map) return '{' + v.collect { k, x -> _bugpunchJson("${k}".toString()) + ':' + _bugpunchJson(x) }.join(',') + '}'
+    if (v instanceof List) return '[' + v.collect { _bugpunchJson(it) }.join(',') + ']'
+    if (v instanceof Boolean || v instanceof Number) return "${v}".toString()
+    def s = "${v}".toString()
+    def out = new StringBuilder('"')
+    for (int i = 0; i < s.length(); i++) {
+        char c = s.charAt(i)
+        if (c == '"' as char) out.append('\\"')
+        else if (c == '\\' as char) out.append('\\\\')
+        else if (c == '\n' as char) out.append('\\n')
+        else if (c == '\r' as char) out.append('\\r')
+        else if (c == '\t' as char) out.append('\\t')
+        else if ((int) c < 0x20) out.append(String.format('\\u%04x', (int) c))
+        else out.append(c)
+    }
+    return out.append('"').toString()
 }
 
 @com.cloudbees.groovy.cps.NonCPS
