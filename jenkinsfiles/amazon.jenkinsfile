@@ -434,6 +434,8 @@ pipeline {
                                 buildPath: env.BUILD_PATH,
                                 buildType: params.BUILD_TYPE
                             )
+                            // Lets Bugpunch test runners install this APK on device seats (best-effort, UNSTABLE on failure).
+                            buildUtils.registerBugpunchBuild(buildPath: env.BUILD_PATH, platform: 'android', artifact: 'apk')
                         }
                     }
                 }
@@ -462,6 +464,7 @@ pipeline {
                                     destFolder: "${env.JOB_NAME}/${env.VERSION}",
                                     buildType: params.BUILD_TYPE
                                 )
+                                buildUtils.addBugpunchDriveMirror()
                             }
                         }
                     }

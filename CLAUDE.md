@@ -308,11 +308,19 @@ blue = running, **orange = built but not yet uploaded**, green/yellow/red/grey =
 
 ## Bugpunch Build Registration (`registerBugpunchBuild`)
 
-Steam (Windows) builds tell Bugpunch where the build can be downloaded, so Bugpunch test runners fetch
-the built player instead of building from source. Called from the `Local Share` stage right after
-`uploadToLocalShare()` (it needs `env.LOCAL_BUILD_PATH`).
+Steam (Windows), Amazon (APK) and Apple (IPA) builds tell Bugpunch where the build can be downloaded,
+so Bugpunch test runners fetch the built player instead of building from source (the dashboard's New
+test → Build → "Uploaded build" picker lists them; runners install APKs on adb device seats). Called
+from the `Local Share` stage right after `uploadToLocalShare()` (it needs `env.LOCAL_BUILD_PATH`).
 
-- Zips the output with `tar.exe -a` (skipping the `*_DoNotShip` / `*_ButDontShipItWithYourGame` symbol
+- **Single-file artifacts** (`artifact: 'apk'` / `'ipa'`): no zip; registers the file
+  `uploadToLocalShare()` already copied into the share, plus its http URL. The job's own Google
+  Drive stage calls `addBugpunchDriveMirror()` after `uploadToGoogleDrive()`: the two stages run in
+  parallel, so if Drive finishes first registration includes `env.GDRIVE_FILE_LINK`, otherwise the
+  Drive stage POSTs it to `/api/builds/<id>/mirrors`. macOS (`macos.groovy`) has its own `sh`/curl
+  copy of both functions.
+
+- Folder builds (Steam): zips the output with `tar.exe -a` (skipping the `*_DoNotShip` / `*_ButDontShipItWithYourGame` symbol
   folders) into the share copy as `<APP_NAME>-<VERSION>-windows.zip`, then POSTs a locations-only
   build to `<server>/api/builds/upload`: the share folder (runners on the LAN copy the zip out of it),
   the zip over http when `LOCAL_SHARE_HTTP_BASE` is set, and a Google Drive link when

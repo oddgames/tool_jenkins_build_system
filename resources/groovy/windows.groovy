@@ -6513,6 +6513,10 @@ for /d %%d in (*.nspd) do (
  * BUGPUNCH_GDRIVE=true. Call after uploadToLocalShare(). Best-effort: a failure marks the build
  * UNSTABLE, never FAILED.
  *
+ * artifact: 'apk' (or 'ipa', ...) registers the single *.<artifact> file uploadToLocalShare already
+ * copied into the share instead of zipping buildPath; its Drive link is attached when the job's own
+ * Google Drive stage produced one (see addBugpunchDriveMirror for the stage that finishes last).
+ *
  * The project's Bugpunch API key and server URL come from its BugpunchConfig asset, the same ones
  * the game ships with; job env BUGPUNCH_URL / BUGPUNCH_API_KEY_CREDENTIAL (Secret text) override.
  * BUGPUNCH_REGISTER=false skips the step. BUGPUNCH_SHARE_SECRET names the Bugpunch secret (Tests ->
@@ -6547,23 +6551,41 @@ private def _registerBugpunchBuild(Map config, String buildPath, String shareDir
     def serverUrl = (env.BUGPUNCH_URL ?: bp.serverUrl ?: 'https://bugpunch.com').replaceFirst('/+$', '')
     def platform = config.platform ?: 'windows'
     def zipDir = "${env.WORKSPACE}\\bugpunch_zip"
-    def zipName = "${_bugpunchSlug(env.APP_NAME ?: env.JOB_BASE_NAME ?: 'build')}-${env.VERSION}-${platform}.zip"
-    def localZip = "${zipDir}\\${zipName}"
-    def shareZip = "${shareDir}\\${zipName}"
+    def zipName
+    def localZip
+    if (config.artifact) {
+        zipName = bat(returnStdout: true, script: """@echo off
+cd /d "${buildPath}"
+for %%f in (*.${config.artifact}) do (
+    echo %%f
+    goto :eof
+)""").trim()
+        if (!zipName) { echo "[INFO] Bugpunch: no *.${config.artifact} in ${buildPath} - not registering"; return }
+        localZip = "${buildPath}\\${zipName}"
+        bat """
+            @echo off
+            if exist "${zipDir}" rmdir /s /q "${zipDir}"
+            mkdir "${zipDir}"
+        """
+    } else {
+        zipName = "${_bugpunchSlug(env.APP_NAME ?: env.JOB_BASE_NAME ?: 'build')}-${env.VERSION}-${platform}.zip"
+        localZip = "${zipDir}\\${zipName}"
 
-    // bsdtar picks the zip format from the extension; the IL2CPP / Burst debug folders are
-    // gigabytes of symbols the player never loads.
-    echo "[INFO] Bugpunch: zipping ${buildPath} -> ${zipName}"
-    bat """
-        @echo off
-        if exist "${zipDir}" rmdir /s /q "${zipDir}"
-        mkdir "${zipDir}"
-        tar.exe -a -c -f "${localZip}" --exclude "*_BackUpThisFolder_ButDontShipItWithYourGame" --exclude "*_BurstDebugInformation_DoNotShip" -C "${buildPath}" .
-        if errorlevel 1 exit /b 1
-        robocopy "${zipDir}" "${shareDir}" "${zipName}" /J /R:3 /W:5 /NJH /NJS /NFL /NDL
-        if %ERRORLEVEL% GEQ 8 exit /b 1
-        exit /b 0
-    """
+        // bsdtar picks the zip format from the extension; the IL2CPP / Burst debug folders are
+        // gigabytes of symbols the player never loads.
+        echo "[INFO] Bugpunch: zipping ${buildPath} -> ${zipName}"
+        bat """
+            @echo off
+            if exist "${zipDir}" rmdir /s /q "${zipDir}"
+            mkdir "${zipDir}"
+            tar.exe -a -c -f "${localZip}" --exclude "*_BackUpThisFolder_ButDontShipItWithYourGame" --exclude "*_BurstDebugInformation_DoNotShip" -C "${buildPath}" .
+            if errorlevel 1 exit /b 1
+            robocopy "${zipDir}" "${shareDir}" "${zipName}" /J /R:3 /W:5 /NJH /NJS /NFL /NDL
+            if %ERRORLEVEL% GEQ 8 exit /b 1
+            exit /b 0
+        """
+    }
+    def shareZip = "${shareDir}\\${zipName}"
     def zipSize = bat(script: "@for %%A in (\"${localZip}\") do @echo %%~zA", returnStdout: true).trim()
 
     // The share folder: a runner on the LAN finds the zip inside it by name.
@@ -6576,7 +6598,10 @@ private def _registerBugpunchBuild(Map config, String buildPath, String shareDir
     def httpUrl = common.localShareUrl(shareZip)
     if (httpUrl?.startsWith('http')) locations << [url: httpUrl, locality: 'lan', label: 'Local share (http)']
 
-    if (env.BUGPUNCH_GDRIVE == 'true' && !params.LOCAL_ONLY) {
+    if (config.artifact) {
+        // The job's own Drive stage uploads the artifact; if it already finished, its link rides along.
+        if (env.GDRIVE_FILE_LINK) locations << [url: env.GDRIVE_FILE_LINK, kind: 'gdrive', locality: 'public', label: 'Google Drive']
+    } else if (env.BUGPUNCH_GDRIVE == 'true' && !params.LOCAL_ONLY) {
         def driveLink = _bugpunchUploadZipToDrive(localZip, zipName)
         if (driveLink) locations << [url: driveLink, kind: 'gdrive', locality: 'public', label: 'Google Drive']
     }
@@ -6589,7 +6614,7 @@ private def _registerBugpunchBuild(Map config, String buildPath, String shareDir
         buildHash : bp.buildHash ?: '',
         branch    : env.PLASTICSCM_BRANCH ?: env.BRANCH ?: '',
         commit    : env.PLASTICSCM_CHANGESET_ID ?: bp.commit ?: '',
-        notes     : "Jenkins ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.VERSION})",
+        notes     : "Jenkins ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.VERSION}) ${env.BUILD_URL ?: ''}".trim(),
     ]
     def form = fields.collect { k, v -> "-F \"${k}=${"${v}".replace('"', "'")}\"" }.join(' ')
     writeFile file: 'bugpunch_zip/locations.json', text: groovy.json.JsonOutput.toJson(locations)
@@ -6601,7 +6626,38 @@ private def _registerBugpunchBuild(Map config, String buildPath, String shareDir
     def buildId = _bugpunchBuildId(out)
     echo "[OK] Bugpunch: registered ${zipName} (${locations.size()} location(s))${buildId ? ', build ' + buildId : ''}"
     env.BUGPUNCH_BUILD_ID = buildId ?: ''
+    env.BUGPUNCH_SERVER_URL = serverUrl
     bat "@if exist \"${zipDir}\" rmdir /s /q \"${zipDir}\""
+}
+
+/**
+ * Attach the Google Drive link to the build registerBugpunchBuild registered. Call at the end of the
+ * job's Drive stage: the Drive and Local Share stages run in parallel, so whichever finishes last
+ * hands Bugpunch the link (registration includes it when Drive finished first). Best-effort.
+ */
+def addBugpunchDriveMirror() {
+    if (env.BUGPUNCH_REGISTER == 'false' || !env.GDRIVE_FILE_LINK || !env.BUGPUNCH_BUILD_ID) return
+    try {
+        def bp = _bugpunchProjectConfig()
+        def body = groovy.json.JsonOutput.toJson([url: env.GDRIVE_FILE_LINK, kind: 'gdrive', locality: 'public', label: 'Google Drive'])
+        writeFile file: 'bugpunch_mirror.json', text: body
+        def post = {
+            bat """
+                @echo off
+                curl.exe -sS --fail-with-body --retry 3 --retry-delay 10 -X POST "${env.BUGPUNCH_SERVER_URL}/api/builds/${env.BUGPUNCH_BUILD_ID}/mirrors" -H "X-Api-Key: %BUGPUNCH_API_KEY%" -H "Content-Type: application/json" --data-binary "@bugpunch_mirror.json"
+                if errorlevel 1 exit /b 1
+            """
+        }
+        if (env.BUGPUNCH_API_KEY_CREDENTIAL) {
+            withCredentials([string(credentialsId: env.BUGPUNCH_API_KEY_CREDENTIAL, variable: 'BUGPUNCH_API_KEY')]) { post() }
+        } else if (bp.apiKey) {
+            withEnv(["BUGPUNCH_API_KEY=${bp.apiKey}"]) { post() }
+        }
+        echo "[OK] Bugpunch: Google Drive link added to build ${env.BUGPUNCH_BUILD_ID}"
+    } catch (e) {
+        echo "[WARNING] Bugpunch: adding the Google Drive link failed: ${e.message}"
+        common.setUnstable("Bugpunch Drive link failed: ${e.message}")
+    }
 }
 
 private def _bugpunchUploadZipToDrive(String localZip, String zipName) {

@@ -560,6 +560,8 @@ pipeline {
                                 buildPath: "${env.XCODE_BASE_PATH}/ipa_adhoc",
                                 buildType: params.BUILD_TYPE
                             )
+                            // Lets Bugpunch test runners install this IPA on device seats (best-effort, UNSTABLE on failure).
+                            buildUtils.registerBugpunchBuild(buildPath: "${env.XCODE_BASE_PATH}/ipa_adhoc", platform: 'ios', artifact: 'ipa')
                         }
                     }
                 }
@@ -588,6 +590,7 @@ pipeline {
                                     destFolder: "${env.JOB_NAME}/${env.VERSION}",
                                     buildType: params.BUILD_TYPE
                                 )
+                                buildUtils.addBugpunchDriveMirror()
                             }
                         }
                     }

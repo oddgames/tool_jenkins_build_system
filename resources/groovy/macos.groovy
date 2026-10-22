@@ -4520,6 +4520,134 @@ def uploadToLocalShare(Map config) {
 // No-op on macOS; cleanup runs on the Windows agent that owns the share.
 def cleanupLocalShare(String sharePath = null) { }
 
+/**
+ * Tell Bugpunch where this IPA can be downloaded (the local-share copy, the share over http when
+ * LOCAL_SHARE_HTTP_BASE serves it, and the job's Google Drive link if that stage already finished),
+ * so test runners can install it instead of building from source. Mirrors windows.groovy's
+ * registerBugpunchBuild; call after uploadToLocalShare(). Best-effort: a failure marks the build
+ * UNSTABLE, never FAILED. Same env switches: BUGPUNCH_REGISTER, BUGPUNCH_URL,
+ * BUGPUNCH_API_KEY_CREDENTIAL, BUGPUNCH_SHARE_SECRET.
+ */
+def registerBugpunchBuild(Map config) {
+    if (env.BUGPUNCH_REGISTER == 'false') { echo '[INFO] Bugpunch: BUGPUNCH_REGISTER=false - not registering the build'; return }
+    def shareDir = env.LOCAL_BUILD_PATH
+    if (!shareDir) { echo '[INFO] Bugpunch: no local share copy (uploadToLocalShare did not run) - not registering'; return }
+    try {
+        def bp = _bugpunchProjectConfig()
+        def go = { _registerBugpunchBuild(config, shareDir, bp) }
+        if (env.BUGPUNCH_API_KEY_CREDENTIAL) {
+            withCredentials([string(credentialsId: env.BUGPUNCH_API_KEY_CREDENTIAL, variable: 'BUGPUNCH_API_KEY')]) { go() }
+        } else if (bp.apiKey) {
+            withEnv(["BUGPUNCH_API_KEY=${bp.apiKey}"]) { go() }
+        } else {
+            echo '[INFO] Bugpunch: no apiKey in Assets/Resources/BugpunchConfig.asset and no BUGPUNCH_API_KEY_CREDENTIAL - not registering'
+        }
+    } catch (e) {
+        echo "[WARNING] Bugpunch build registration failed: ${e.message}"
+        common.setUnstable("Bugpunch build registration failed: ${e.message}")
+    }
+}
+
+private def _registerBugpunchBuild(Map config, String shareDir, Map bp) {
+    def serverUrl = (env.BUGPUNCH_URL ?: bp.serverUrl ?: 'https://bugpunch.com').replaceFirst('/+$', '')
+    def ext = config.artifact ?: 'ipa'
+    def fileName = sh(script: "cd \"${config.buildPath}\" && ls *.${ext} 2>/dev/null | head -1", returnStdout: true).trim()
+    if (!fileName) { echo "[INFO] Bugpunch: no *.${ext} in ${config.buildPath} - not registering"; return }
+    def fileSize = sh(script: "stat -f %z \"${config.buildPath}/${fileName}\"", returnStdout: true).trim()
+
+    // The share folder: a runner on the LAN finds the file inside it by name; the share login is a
+    // Bugpunch project secret the location names, resolved only inside a runner's download plan.
+    def shareSecret = env.BUGPUNCH_SHARE_SECRET ?: 'builds_share'
+    def share = [url: shareDir, kind: 'unc', locality: 'lan', label: 'Local share']
+    if (shareSecret != 'none') share.authSecret = shareSecret
+    def locations = [share]
+    def httpUrl = common.localShareUrl("${shareDir}\\${fileName}")
+    if (httpUrl?.startsWith('http')) locations << [url: httpUrl, locality: 'lan', label: 'Local share (http)']
+    if (env.GDRIVE_FILE_LINK) locations << [url: env.GDRIVE_FILE_LINK, kind: 'gdrive', locality: 'public', label: 'Google Drive']
+
+    def fields = [
+        platform  : config.platform ?: 'ios',
+        fileName  : fileName,
+        fileSize  : fileSize,
+        appVersion: bp.version ?: '',
+        buildHash : bp.buildHash ?: '',
+        branch    : env.PLASTICSCM_BRANCH ?: env.BRANCH ?: '',
+        commit    : env.PLASTICSCM_CHANGESET_ID ?: bp.commit ?: '',
+        notes     : "Jenkins ${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.VERSION}) ${env.BUILD_URL ?: ''}".trim(),
+    ]
+    def form = fields.collect { k, v -> "-F '${k}=${"${v}".replace("'", '')}'" }.join(' ')
+    writeFile file: 'bugpunch_locations.json', text: groovy.json.JsonOutput.toJson(locations)
+    def out = sh(returnStdout: true, script: """
+        curl -sS --fail-with-body --retry 3 --retry-delay 10 -X POST '${serverUrl}/api/builds/upload' -H "X-Api-Key: \$BUGPUNCH_API_KEY" ${form} -F 'locations=<bugpunch_locations.json'
+    """).trim()
+    def buildId = _bugpunchBuildId(out)
+    echo "[OK] Bugpunch: registered ${fileName} (${locations.size()} location(s))${buildId ? ', build ' + buildId : ''}"
+    env.BUGPUNCH_BUILD_ID = buildId ?: ''
+    env.BUGPUNCH_SERVER_URL = serverUrl
+}
+
+/**
+ * Attach the Google Drive link to the build registerBugpunchBuild registered. Call at the end of the
+ * job's Drive stage: it runs in parallel with Local Share, so whichever finishes last hands Bugpunch
+ * the link (registration includes it when Drive finished first). Best-effort.
+ */
+def addBugpunchDriveMirror() {
+    if (env.BUGPUNCH_REGISTER == 'false' || !env.GDRIVE_FILE_LINK || !env.BUGPUNCH_BUILD_ID) return
+    try {
+        def bp = _bugpunchProjectConfig()
+        writeFile file: 'bugpunch_mirror.json', text: groovy.json.JsonOutput.toJson([url: env.GDRIVE_FILE_LINK, kind: 'gdrive', locality: 'public', label: 'Google Drive'])
+        def post = {
+            sh """
+                curl -sS --fail-with-body --retry 3 --retry-delay 10 -X POST '${env.BUGPUNCH_SERVER_URL}/api/builds/${env.BUGPUNCH_BUILD_ID}/mirrors' -H "X-Api-Key: \$BUGPUNCH_API_KEY" -H 'Content-Type: application/json' --data-binary @bugpunch_mirror.json
+            """
+        }
+        if (env.BUGPUNCH_API_KEY_CREDENTIAL) {
+            withCredentials([string(credentialsId: env.BUGPUNCH_API_KEY_CREDENTIAL, variable: 'BUGPUNCH_API_KEY')]) { post() }
+        } else if (bp.apiKey) {
+            withEnv(["BUGPUNCH_API_KEY=${bp.apiKey}"]) { post() }
+        }
+        echo "[OK] Bugpunch: Google Drive link added to build ${env.BUGPUNCH_BUILD_ID}"
+    } catch (e) {
+        echo "[WARNING] Bugpunch: adding the Google Drive link failed: ${e.message}"
+        common.setUnstable("Bugpunch Drive link failed: ${e.message}")
+    }
+}
+
+/** apiKey / serverUrl from Resources/BugpunchConfig.asset, version / buildHash / commit from the SDK's build stamp. */
+private Map _bugpunchProjectConfig() {
+    def project = env.UNITY_PROJECT ?: '.'
+    def result = [:]
+    def configPath = "${project}/Assets/Resources/BugpunchConfig.asset"
+    if (fileExists(configPath)) result.putAll(_bugpunchYamlFields(readFile(configPath), ['apiKey', 'serverUrl']))
+    def stampPath = "${project}/Assets/Bugpunch/Resources/BugpunchBuildInfo.txt"
+    if (fileExists(stampPath)) result.putAll(_bugpunchStampFields(readFile(stampPath)))
+    return result
+}
+
+@com.cloudbees.groovy.cps.NonCPS
+private Map _bugpunchYamlFields(String text, List<String> keys) {
+    def out = [:]
+    text.split('\n').each { line ->
+        def t = line.trim()
+        keys.each { k -> if (t.startsWith("${k}:")) out[k] = t.substring(k.length() + 1).trim() }
+    }
+    return out
+}
+
+@com.cloudbees.groovy.cps.NonCPS
+private Map _bugpunchStampFields(String text) {
+    def stamp = text.trim()
+    if (!stamp.startsWith('{')) return [:]
+    def parsed = new groovy.json.JsonSlurper().parseText(stamp)
+    return [buildHash: parsed.buildHash ?: '', version: parsed.version ?: '', commit: parsed.commit ?: '']
+}
+
+@com.cloudbees.groovy.cps.NonCPS
+private String _bugpunchBuildId(String response) {
+    def m = (response =~ /"Id"\s*:\s*"([^"]+)"/)
+    return m.find() ? m.group(1) : ''
+}
+
 def uploadToTestFlight(Map config) {
     def ipaPath = config.ipaPath
     def apiKeyId = config.apiKeyId
