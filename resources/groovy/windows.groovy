@@ -6515,7 +6515,9 @@ for /d %%d in (*.nspd) do (
  *
  * The project's Bugpunch API key and server URL come from its BugpunchConfig asset, the same ones
  * the game ships with; job env BUGPUNCH_URL / BUGPUNCH_API_KEY_CREDENTIAL (Secret text) override.
- * BUGPUNCH_REGISTER=false skips the step.
+ * BUGPUNCH_REGISTER=false skips the step. BUGPUNCH_SHARE_SECRET names the Bugpunch secret (Tests ->
+ * Secrets, value user:password) runners log in to the share with; default builds_share, 'none' for an
+ * open share.
  */
 def registerBugpunchBuild(Map config) {
     if (env.BUGPUNCH_REGISTER == 'false') { echo '[INFO] Bugpunch: BUGPUNCH_REGISTER=false - not registering the build'; return }
@@ -6565,7 +6567,12 @@ private def _registerBugpunchBuild(Map config, String buildPath, String shareDir
     def zipSize = bat(script: "@for %%A in (\"${localZip}\") do @echo %%~zA", returnStdout: true).trim()
 
     // The share folder: a runner on the LAN finds the zip inside it by name.
-    def locations = [[url: shareDir, kind: 'unc', locality: 'lan', label: 'Local share']]
+    // The share login lives in the project's Bugpunch secrets, never in Jenkins or the build record:
+    // the location names the secret, and the server resolves it only inside a runner's download plan.
+    def shareSecret = env.BUGPUNCH_SHARE_SECRET ?: 'builds_share'
+    def share = [url: shareDir, kind: 'unc', locality: 'lan', label: 'Local share']
+    if (shareSecret != 'none') share.authSecret = shareSecret
+    def locations = [share]
     def httpUrl = common.localShareUrl(shareZip)
     if (httpUrl?.startsWith('http')) locations << [url: httpUrl, locality: 'lan', label: 'Local share (http)']
 

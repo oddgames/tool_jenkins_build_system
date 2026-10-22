@@ -322,6 +322,9 @@ the built player instead of building from source. Called from the `Local Share` 
   `commit` from the SDK's `Assets/Bugpunch/Resources/BugpunchBuildInfo.txt` stamp, so the row merges
   with any build the SDK itself reported. Job env `BUGPUNCH_URL`, `BUGPUNCH_API_KEY_CREDENTIAL`
   (Secret text) override; `BUGPUNCH_REGISTER=false` skips the step.
+- **Share login**: the share location names a Bugpunch secret (`BUGPUNCH_SHARE_SECRET`, default
+  `builds_share`; `none` for an open share). Set it once per project on Bugpunch Tests → Secrets as
+  `user:password`; Windows runners `net use` the share with it before copying. Jenkins never holds it.
 - Best-effort: any failure marks the build UNSTABLE with the reason; it never fails it. The Bugpunch
   build id lands in `env.BUGPUNCH_BUILD_ID`.
 
