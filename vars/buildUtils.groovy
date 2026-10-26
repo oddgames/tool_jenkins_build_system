@@ -360,7 +360,7 @@ def init(Map config = [:]) {
 
     try {
         // Load common utilities
-        common = evaluate(libraryResource('groovy/common.groovy'))
+        common = _withOwnBinding(evaluate(libraryResource('groovy/common.groovy')))
 
         // Detect platform using isUnix() - requires node context
         // Cache it so ensureInitialized can reuse if called outside node
@@ -370,7 +370,7 @@ def init(Map config = [:]) {
 
         def platformScript = cachedIsWindows ? 'groovy/windows.groovy' : 'groovy/macos.groovy'
         def platformContent = libraryResource(platformScript)
-        platform = evaluate(platformContent)
+        platform = _withOwnBinding(evaluate(platformContent))
         platform.init(common)
         // Auto-version preflight cache from library content — any code change invalidates.
         // Hash platform + common so preflight reruns when any library file changes.
@@ -435,7 +435,7 @@ def init(Map config = [:]) {
         } catch (Exception ex) {
             echo "[DEBUG] Could not get library changeset: ${ex.message}"
         }
-        common.knownErrors = evaluate(libraryResource('groovy/knownErrors.groovy'))
+        common.knownErrors = _withOwnBinding(evaluate(libraryResource('groovy/knownErrors.groovy')))
     } catch (org.jenkinsci.plugins.workflow.steps.MissingContextVariableException e) {
         // isUnix() requires node context - let ensureInitialized() handle fallback
         throw e
@@ -446,6 +446,23 @@ def init(Map config = [:]) {
         error "[ERROR] Failed to initialize build utilities: ${e.message}"
     }
     return this
+}
+
+/**
+ * Give an evaluated library module a Binding of its own, holding only the pipeline steps, and return it.
+ * Evaluated scripts share the pipeline shell's Binding, and a controller restart restores a shared Binding
+ * only partly: a module comes back without variables stored in it, such as the `common` that the platform
+ * module's init() keeps. Apply it to every module before anything is stored in the module. A value that is
+ * not a script (knownErrors.groovy evaluates to null) is returned unchanged.
+ */
+@NonCPS
+private def _withOwnBinding(module) {
+    if (module instanceof Script) {
+        def own = new Binding()
+        own.setVariable('steps', module.binding.getVariable('steps'))
+        module.binding = own
+    }
+    return module
 }
 
 def copyPipelineScripts() {
@@ -729,7 +746,7 @@ private def ensureInitialized() {
     // Load common even if platform init failed - needed for Slack notifications
     if (common == null) {
         try {
-            common = evaluate(libraryResource('groovy/common.groovy'))
+            common = _withOwnBinding(evaluate(libraryResource('groovy/common.groovy')))
         } catch (Exception e) {
             echo "[WARN] Could not load common utilities: ${e.message}"
         }
@@ -739,7 +756,7 @@ private def ensureInitialized() {
     if (common != null) {
         if (platform != null) common.platformModule = platform
         if (common.knownErrors == null) {
-            try { common.knownErrors = evaluate(libraryResource('groovy/knownErrors.groovy')) } catch (Exception e) { }
+            try { common.knownErrors = _withOwnBinding(evaluate(libraryResource('groovy/knownErrors.groovy'))) } catch (Exception e) { }
         }
     }
 }
