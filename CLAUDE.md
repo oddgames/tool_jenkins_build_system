@@ -415,6 +415,36 @@ away (the Slack post goes out before the final archive) and adds the badges. The
 reports themselves. Use it for detail too long for a `[BUILD-WARN]` line, so the log and Slack stay
 short while the full list is one click away.
 
+## Slack "Investigate with Claude" Prompt
+
+Failed and unstable Slack posts carry a prompt a dev pastes into Claude to investigate the build. It names the
+full `JOB_NAME`, build number and failed stage, and tells the agent to use the **jenkins MCP server** (see below)
+or the **`jenkins-logs` skill**.
+
+- **`DASHBOARD_URL` set**: a `Copy Claude prompt` link (`agentPromptUrl()`) to the release dashboard's
+  `public/claude.html` (repo `oddgames/ReleaseDashboard`), which builds the prompt from the query string and
+  copies it when the page opens, with a Copy button for browsers that need a click. Slack has no
+  copy-to-clipboard action, so a page is the only one-click route. It sits behind the dashboard's ngrok
+  Google login, like the rest of the dashboard.
+- **Unset**: a code block (`agentInvestigatePrompt()`) that also carries the evidence the post already has
+  (error explanation, detected error lines, `UNSTABLE_REASONS`), capped near 2700 chars because Slack sections
+  stop at 3000. `<`, `>` and `&` are escaped as entities (Slack parses them even inside a code block) and
+  backticks become `'`.
+
+## Jenkins MCP (`.mcp.json`)
+
+`.mcp.json` registers the Jenkins **MCP Server** plugin (`/mcp-server/mcp`) for Claude Code sessions in this
+repo. **This repo is public, so the credentials are not in the file**: each dev sets `JENKINS_MCP_AUTH` to base64
+of `<user>:<password or api token>` (a read-only Jenkins user, because the plugin also exposes
+`triggerBuild` / `replayBuild`). The MTD workspace (Plastic, private) has its own `UnityProj_MTD/.mcp.json` with
+the credentials built in.
+
+The ngrok endpoint for `quakeserver.ngrok.app` (an `endpoints:` entry with a traffic policy, in the `ngrok.yml`
+passed to `ngrok start jenkins --config ...` on the Jenkins box) exempts `/mcp-server/` from the Google login,
+so Anonymous must hold no permissions in Jenkins. Anonymous MCP calls fail with `anonymous is missing the
+Overall/Read permission`. The ngrok there is the Microsoft Store build, which reads its own private copy of
+`ngrok.yml` unless `--config` names the file.
+
 ## GitHub Auth for Private Packages (PATs)
 
 `configureGitAuth()` (in `windows.groovy`/`macos.groovy`, called from `startup()`) sets `git config --global url.insteadOf` so Unity's UPM can resolve private GitHub packages, then `cleanupGitAuth()` removes it in post.

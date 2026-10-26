@@ -1370,6 +1370,16 @@ def sendSlackBuildNotification(Map config) {
         blocks << [type: 'context', elements: [[type: 'mrkdwn', text: "${reportText}\n${dbLink}"]]]
     }
 
+    // Prompt for a Claude agent to investigate this build. Slack can't write to the clipboard, so with a dashboard
+    // it's a link to the dashboard's claude.html, which copies the prompt on open; otherwise a code block to copy.
+    if (status == 'failure' || status == 'unstable') {
+        if (env.DASHBOARD_URL) {
+            blocks << [type: 'context', elements: [[type: 'mrkdwn', text: "<${agentPromptUrl(env.DASHBOARD_URL, status)}|:clipboard: *Copy Claude prompt*> - paste it into Claude Code to investigate this build"]]]
+        } else {
+            blocks << [type: 'section', text: [type: 'mrkdwn', text: ":robot_face: *Investigate with Claude* (copy & paste):\n```${agentInvestigatePrompt(status, branch, changesetId, errorAnalysis)}```"]]
+        }
+    }
+
     if (uploadStatusLine) {
         blocks << [type: 'context', elements: [[type: 'mrkdwn', text: uploadStatusLine]]]
     }
@@ -1400,6 +1410,63 @@ def sendSlackBuildNotification(Map config) {
         echo "[DEBUG] Channel: ${channel}, AppIcon: ${appIcon}, Platform: ${platform}"
         return null
     }
+}
+
+/**
+ * Link to the release dashboard's claude.html, which builds the investigate-this-build prompt from these
+ * parameters and copies it to the clipboard when opened.
+ */
+String agentPromptUrl(String dashboardUrl, String status) {
+    def enc = { String s -> java.net.URLEncoder.encode(s ?: '', 'UTF-8') }
+    def url = "${dashboardUrl}/claude.html?job=${enc(env.JOB_NAME)}&build=${env.BUILD_NUMBER}&status=${status}"
+    if (status == 'failure' && env.FAILED_STAGE) url += "&stage=${enc(env.FAILED_STAGE)}"
+    return url
+}
+
+/**
+ * Prompt a dev pastes into Claude to investigate this build. The jenkins-logs skill resolves the full
+ * JOB_NAME and build number through the release dashboard (Jenkins itself sits behind ngrok OAuth, so
+ * BUILD_URL is for humans only). An agent without that skill or its key can't read anything, so the
+ * prompt also carries the evidence the post already has: the failure explanation, the detected error
+ * lines and the unstable reasons. Kept under Slack's 3000-char section limit; <, > and & are escaped as
+ * entities because Slack parses them as mrkdwn even inside a code block.
+ */
+def agentInvestigatePrompt(String status, String branch, String changesetId, String errorAnalysis = '') {
+    def facts = []
+    if (status == 'failure') facts << (env.FAILED_STAGE ? "FAILURE in stage '${env.FAILED_STAGE}'" : 'FAILURE')
+    else facts << 'UNSTABLE'
+    if (env.PLATFORM) facts << "platform ${env.PLATFORM}"
+    if (branch) facts << "branch ${branch}"
+    if (changesetId) facts << "changeset ${changesetId}"
+    if (env.BUILD_NODE) facts << "agent ${env.BUILD_NODE}"
+    def ask = status == 'failure'
+        ? 'find the root cause and propose a fix'
+        : 'find what flagged it unstable (build_warnings.txt, reports/) and whether it needs a fix'
+    def text = "Investigate Jenkins job ${env.JOB_NAME} build ${env.BUILD_NUMBER} (${facts.join(', ')}). " +
+        "Use the jenkins MCP server (getBuild, searchBuildLog, getBuildLog) or the jenkins-logs skill to read its stages, console log and archived artifacts, then ${ask}. " +
+        "If you cannot reach the logs, work from the evidence below and say which log or artifact you need. " +
+        "${env.BUILD_URL}"
+
+    def evidence = []
+    if (status == 'unstable' && env.UNSTABLE_REASONS) evidence << "Unstable: ${env.UNSTABLE_REASONS}"
+    if (errorAnalysis) {
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(errorAnalysis)
+            if (parsed.explanation) evidence << "${parsed.knownError ? 'Known error' : 'Analysis'}: ${parsed.explanation.toString().take(800)}"
+            (parsed.errors ?: []).each { err ->
+                def stagePrefix = err.stage ? "(${err.stage}) " : ''
+                evidence << "- ${stagePrefix}${err.message}"
+            }
+        } catch (Exception e) {
+            evidence << errorAnalysis.take(800)
+        }
+    }
+    if (evidence) {
+        def budget = 2700 - text.length()
+        def joined = evidence.unique().join('\n')
+        text += "\n\nEvidence from the build:\n" + (joined.length() > budget ? joined.take(Math.max(budget, 0)) + '\n...' : joined)
+    }
+    return text.replace('`', "'").replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 }
 
 // ============================================================================

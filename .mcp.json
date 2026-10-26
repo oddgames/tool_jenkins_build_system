@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "jenkins": {
+      "type": "http",
+      "url": "https://quakeserver.ngrok.app/mcp-server/mcp",
+      "headers": {
+        "Authorization": "Basic ${JENKINS_MCP_AUTH:-}"
+      }
+    }
+  }
+}
