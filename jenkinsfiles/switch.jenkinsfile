@@ -175,11 +175,8 @@ pipeline {
         }
 
         stage('Unity') {
-            when {
-                expression {
-                    return !buildUtils.shouldSkipPreflight() || params.CLEAN_CACHE?.contains('Force Preflight')
-                }
-            }
+            // Always runs: the preflight marker is per agent, not per Unity version, so skipping this let a job on
+            // a new editor version miss the install. It is a file-exists check when the editor is already there.
             steps {
                 script {
                     buildUtils.setCurrentStage('Preflight: Unity')

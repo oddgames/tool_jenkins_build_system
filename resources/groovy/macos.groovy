@@ -64,34 +64,46 @@ def markUpdateChecked(String toolName) {
 }
 
 /**
- * Check if preflight checks can be skipped (passed within last 24 hours).
+ * What a passed preflight vouches for: the preflight code itself, the Unity editor version and the target platform
+ * (which picks the modules and SDKs). One agent serves several jobs, so a pass for one combination says nothing
+ * about another - each combination keeps its own marker, and jobs taking turns on an agent do not reset each other.
+ */
+def preflightKey() {
+    return "${PREFLIGHT_VERSION}_${env.UNITY_VERSION ?: 'nounity'}_${env.PLATFORM ?: 'noplatform'}".replaceAll(/[^A-Za-z0-9._-]/, '-')
+}
+
+/**
+ * Check if preflight checks can be skipped (passed within last 24 hours for this exact preflightKey()).
  * @return true if preflights should be skipped, false if they need to run
  */
 def shouldSkipPreflight() {
     def toolsDir = getToolsDir()
-    def markerFile = "${toolsDir}/.preflight_ok"
+    def key = preflightKey()
+    def markerFile = "${toolsDir}/.preflight_ok_${key}"
     def result = sh(script: """
 if [ ! -f '${markerFile}' ]; then echo NOT_FOUND; exit 0; fi
 stored=\$(cat '${markerFile}')
-if [ "\$stored" != "${PREFLIGHT_VERSION}" ]; then echo VERSION_MISMATCH; exit 0; fi
+if [ "\$stored" != "${key}" ]; then echo VERSION_MISMATCH; exit 0; fi
 echo \$(( ( \$(date +%s) - \$(stat -f%m '${markerFile}') ) / 3600 ))
 """, returnStdout: true).trim()
     if (result == 'NOT_FOUND' || result == 'VERSION_MISMATCH') return false
     if (!result.isInteger()) return false
     def skip = result.toInteger() < 24
     if (skip) {
-        echo "[Preflight] Skipping — passed ${result}h ago (v${PREFLIGHT_VERSION}, < 24h)"
+        echo "[Preflight] Skipping — passed ${result}h ago (${key}, < 24h)"
     }
     return skip
 }
 
 /**
- * Mark preflights as passed. Writes PREFLIGHT_VERSION so changes invalidate the cache.
+ * Mark preflights as passed for this preflightKey(). Any change to the preflight code, Unity version or platform
+ * reads as a different key, so it runs the full preflight again.
  */
 def markPreflightPassed() {
     def toolsDir = getToolsDir()
-    sh(script: "echo '${PREFLIGHT_VERSION}' > '${toolsDir}/.preflight_ok'", returnStatus: true)
-    echo "[Preflight] Marked as passed (v${PREFLIGHT_VERSION})"
+    def key = preflightKey()
+    sh(script: "echo '${key}' > '${toolsDir}/.preflight_ok_${key}'", returnStatus: true)
+    echo "[Preflight] Marked as passed (${key})"
 }
 
 /**
