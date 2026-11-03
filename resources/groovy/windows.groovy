@@ -1556,8 +1556,15 @@ private def _doInstallUnity(String version, List modules) {
         def exeExists = bat(script: "@if exist \"${unityExe}\" echo found", returnStdout: true).trim()
         if (exeExists != 'found') {
             echo "[WARN] Removing partial Unity installation at ${installDir} (Unity.exe missing)"
-            bat script: "rmdir /s /q \"${installDir}\""
+            // A junction from _adoptHubTrackedEditor() whose target is gone: rmdir removes the link only
+            bat script: "fsutil reparsepoint query \"${installDir}\" >nul 2>&1 && rmdir \"${installDir}\" || rmdir /s /q \"${installDir}\""
         }
+    }
+
+    // Hub refuses to install a version it already lists anywhere ("Editor already installed in
+    // this location"), so use its copy when it has one, before downloading anything.
+    if (_adoptHubTrackedEditor(version)) {
+        return [available: true, installed: true, message: "Unity ${version} linked to the copy Unity Hub tracks"]
     }
 
     try {
@@ -1618,6 +1625,109 @@ private def _doInstallUnity(String version, List modules) {
         logInstalledEditors()
         return [available: false, installed: false, message: "Installation failed: ${e.message}"]
     }
+}
+
+/**
+ * Make C:\UnityEditors\<version> the copy of Unity <version> that Unity Hub already lists.
+ *
+ * `install` fails with "Editor already installed in this location" whenever Hub's editor list has the
+ * version, wherever it is. That list is a scan of Hub's default folder (C:\Program Files\Unity\Hub\Editor,
+ * always scanned) and of install-path, both matching folders by name prefix (6000.0.85f1-x86_64 counts),
+ * plus the editors located by hand in %APPDATA%\UnityHub\editors-v2.json. An editor installed from the
+ * Hub app, or before install-path was set, sits in the default folder, and every build then fails
+ * without downloading anything (MTD Android #8127).
+ *
+ * - Hub's copy has Unity.exe: junction C:\UnityEditors\<version> to it, so every hardcoded path works,
+ *   and install-modules (which writes to Hub's copy) shows through the junction.
+ * - Hub's copy has no Unity.exe (a located editor that was deleted): drop it from editors-v2.json so
+ *   the install can run. Scanned folders can't be stale: Hub skips those without Unity.exe.
+ *
+ * Returns true when C:\UnityEditors\<version>\Editor\Unity.exe exists afterwards. Best-effort: any
+ * failure returns false and the normal install runs.
+ */
+private boolean _adoptHubTrackedEditor(String version) {
+    def installDir = "C:\\UnityEditors\\${version}"
+    def unityExe = "${installDir}\\Editor\\Unity.exe"
+    try {
+        def hubExe = env.UNITY_HUB_PATH.split('\\\\').last()
+        bat script: "@taskkill /f /im \"${hubExe}\" >nul 2>&1 || exit /b 0"
+        def output = ''
+        try {
+            timeout(time: 3, unit: 'MINUTES') {
+                output = bat(script: "@cmd /c \"\"${env.UNITY_HUB_PATH}\" -- --headless editors -i\" 2>&1 || exit /b 0", returnStdout: true).trim()
+            }
+        } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
+            echo "[WARN] Unity Hub 'editors -i' timed out - installing without it"
+        }
+        bat script: "@taskkill /f /im \"${hubExe}\" >nul 2>&1 || exit /b 0"
+
+        def tracked = _parseHubEditorDirs(output, version)
+        if (!tracked) {
+            echo "[INFO] Unity Hub doesn't list ${version} - installing"
+            return false
+        }
+        echo "[INFO] Unity Hub lists ${version} at: ${tracked.join(', ')}"
+
+        def usable = tracked.find { dir ->
+            bat(script: "@if exist \"${dir}\\Editor\\Unity.exe\" echo found", returnStdout: true).trim() == 'found'
+        }
+        if (usable) {
+            if (usable.equalsIgnoreCase(installDir)) return true
+            echo "[WARN] Unity ${version} is installed outside C:\\UnityEditors (Hub app install?) - linking ${installDir} -> ${usable}"
+            bat script: "@if not exist \"C:\\UnityEditors\" mkdir \"C:\\UnityEditors\"\n@mklink /J \"${installDir}\" \"${usable}\""
+            def linked = bat(script: "@if exist \"${unityExe}\" echo found", returnStdout: true).trim() == 'found'
+            if (linked) echo "[OK] Unity ${version} available at ${unityExe}"
+            return linked
+        }
+
+        echo "[WARN] Unity Hub lists ${version} but Unity.exe is missing there - removing the stale entry from editors-v2.json"
+        def scriptFile = "${env.WORKSPACE}\\hub_prune_editor.ps1"
+        writeFile file: scriptFile, text: """
+\$f = Join-Path \$env:APPDATA 'UnityHub\\editors-v2.json'
+if (-not (Test-Path \$f)) { Write-Host "[WARN] \$f not found"; exit 0 }
+\$j = Get-Content \$f -Raw | ConvertFrom-Json
+\$before = @(\$j.data).Count
+\$j.data = @(@(\$j.data) | Where-Object { \$_.version -ne '${version}' -or (@(\$_.location) | Where-Object { Test-Path \$_ }) })
+if (\$j.data.Count -eq \$before) { Write-Host "[WARN] No stale ${version} entry in \$f"; exit 0 }
+# UTF-8 without BOM: Hub's JSON.parse rejects a BOM and would flush every located editor
+[IO.File]::WriteAllText(\$f, (ConvertTo-Json \$j -Depth 20 -Compress))
+Write-Host "[OK] Removed \$(\$before - \$j.data.Count) stale ${version} entries from \$f"
+"""
+        bat script: "@powershell -NoProfile -ExecutionPolicy Bypass -File \"${scriptFile}\"", returnStatus: true
+        return false
+    } catch (org.jenkinsci.plugins.workflow.steps.FlowInterruptedException e) {
+        throw e  // build aborted
+    } catch (Exception e) {
+        echo "[WARN] Could not check Unity Hub's editor list: ${e.message}"
+        return false
+    }
+}
+
+/**
+ * Editor folders for one version from `editors -i` output, e.g.
+ *   6000.0.85f1 installed at C:\Program Files\Unity\Hub\Editor\6000.0.85f1\Editor\Unity.exe
+ *   6000.6.0f1  installed at ...
+ * @NonCPS: plain string ops only, no Matcher in CPS scope.
+ */
+@com.cloudbees.groovy.cps.NonCPS
+private List _parseHubEditorDirs(String output, String version) {
+    def dirs = []
+    if (!output) return dirs
+    def marker = ' installed at '
+    def suffix = '\\Editor\\Unity.exe'
+    for (String line : output.split('\n')) {
+        def l = line.trim()
+        if (!l.startsWith(version) || l.length() == version.length()) continue
+        // 6000.0.85f1 must not match 6000.0.85f10; an architecture label "(Intel)" may follow
+        def next = l.substring(version.length(), version.length() + 1)
+        if (next.trim() && next != '(') continue
+        def idx = l.indexOf(marker)
+        if (idx < 0) continue
+        def path = l.substring(idx + marker.length()).trim()
+        if (path.toLowerCase().endsWith(suffix.toLowerCase())) path = path.substring(0, path.length() - suffix.length())
+        dirs << path
+    }
+    return dirs
 }
 
 /**
