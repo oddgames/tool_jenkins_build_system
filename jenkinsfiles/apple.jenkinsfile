@@ -26,12 +26,13 @@
  * Optional Jenkins Environment Variables:
  *   UPLOAD_CRASHLYTICS_SYMBOLS - Set to 'true' to upload dSYM files to Firebase Crashlytics
  *   GOOGLE_SERVICES_CREDENTIAL_ID - Jenkins credential ID containing GoogleService-Info.plist (optional, auto-detected from project)
+ *   APPLE_AGENT_LABEL      - Agent label or node name to keep this job on one Mac (default: "OSX")
  */
 
 pipeline {
     agent {
         node {
-            label buildUtils.pickNode(params.NODE, 'OSX', params.BRANCH)
+            label buildUtils.pickNode(params.NODE, env.APPLE_AGENT_LABEL ?: 'OSX', params.BRANCH)
         }
     }
 
@@ -80,6 +81,7 @@ pipeline {
 
     options {
         skipDefaultCheckout()
+        disableConcurrentBuilds()
     }
 
     stages {
