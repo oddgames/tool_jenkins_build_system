@@ -3685,8 +3685,8 @@ def setupBranchCaches(String unityProjectPath) {
 }
 
 /**
- * Stamp this branch's cache as used, then delete this job's other branch caches unused for 30 days.
- * _main is always kept. A cache with no stamp gets one now, which starts its 30 days.
+ * Stamp this branch's cache as used, then delete this job's other branch caches unused for 3 days.
+ * _main is always kept. A cache with no stamp gets one now, which starts its 3 days.
  */
 def pruneStaleBranchCaches(String store) {
     def jobStore = store.substring(0, store.lastIndexOf('/'))
@@ -3699,7 +3699,7 @@ def pruneStaleBranchCaches(String store) {
             stamp="\$dir/.lastused"
             if [ ! -e "\$stamp" ]; then
                 touch "\$stamp"
-            elif [ -n "\$(find "\$stamp" -mtime +30)" ]; then
+            elif [ -n "\$(find "\$stamp" -mtime +2)" ]; then  # +2 = 3 or more full days
                 echo "[Branch Cache] Pruning unused cache: \$dir (\$(du -sh "\$dir" | cut -f1))"
                 force_clean "\$dir"
             fi
