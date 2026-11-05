@@ -309,7 +309,7 @@ blue = running, **orange = built but not yet uploaded**, green/yellow/red/grey =
 
 ## Bugpunch Build Registration (`registerBugpunchBuild`)
 
-Steam (Windows), Amazon (APK) and Apple (IPA) builds tell Bugpunch where the build can be downloaded,
+Steam (Windows), Amazon and Google Play (APK) and Apple (IPA) builds tell Bugpunch where the build can be downloaded,
 so Bugpunch test runners fetch the built player instead of building from source (the dashboard's New
 test → Build → "Uploaded build" picker lists them; runners install APKs on adb device seats). Called
 from the `Local Share` stage right after `uploadToLocalShare()` (it needs `env.LOCAL_BUILD_PATH`).
