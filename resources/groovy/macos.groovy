@@ -3681,6 +3681,31 @@ def setupBranchCaches(String unityProjectPath) {
             echo "[Branch Cache] linked \$d"
         done
     """
+    pruneStaleBranchCaches(store)
+}
+
+/**
+ * Stamp this branch's cache as used, then delete this job's other branch caches unused for 30 days.
+ * _main is always kept. A cache with no stamp gets one now, which starts its 30 days.
+ */
+def pruneStaleBranchCaches(String store) {
+    def jobStore = store.substring(0, store.lastIndexOf('/'))
+    def status = sh(script: """
+        ${forceCleanShellFn()}
+        touch "${store}/.lastused"
+        for dir in "${jobStore}"/*/; do
+            dir="\${dir%/}"
+            [ "\$(basename "\$dir")" = "_main" ] && continue
+            stamp="\$dir/.lastused"
+            if [ ! -e "\$stamp" ]; then
+                touch "\$stamp"
+            elif [ -n "\$(find "\$stamp" -mtime +30)" ]; then
+                echo "[Branch Cache] Pruning unused cache: \$dir (\$(du -sh "\$dir" | cut -f1))"
+                force_clean "\$dir"
+            fi
+        done
+    """, returnStatus: true)
+    if (status != 0) echo "[WARN] Branch cache prune failed with exit code ${status}"
 }
 
 def cleanUnityCache(String unityProjectPath, String cleanCache, boolean skipConfirmation = false) {
